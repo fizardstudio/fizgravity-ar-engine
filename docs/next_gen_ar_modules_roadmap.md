@@ -34,7 +34,7 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
 
 ## 💄 Kategori 3: Spesialisasi Kecantikan & Riasan Premium (Beauty-Tech)
 
-- [ ] **5. Triangulator Kosmetik Lokal Delaunay (`src/makeup_triangulator.rs`)**
+- [x] **5. Triangulator Kosmetik Lokal Delaunay (`src/makeup_triangulator.rs`)**
   * **Prioritas**: **[PRIORITAS UTAMA - DIBUTUHKAN LANGSUNG UNTUK GLOWMATCH]**
   * **Dampak**: Memberikan presisi rendering 3D pada batas-batas sensitif kelopak mata dan bibir agar makeup tidak pecah atau bocor keluar dari garis bibir saat berbicara/membuka mulut.
   * **Solusi**: Modul yang melakukan Delaunay Triangulation lokal khusus untuk sub-area kosmetik (bibir atas/bawah terpisah, kelopak mata berkedip).
