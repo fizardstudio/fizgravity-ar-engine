@@ -21,6 +21,7 @@ pub struct ArTexCoord2D {
 #[derive(Debug, Copy, Clone)]
 pub struct ArFaceVertexInterleaved {
     pub position: ArVertex3D,
+    pub normal: ArVertex3D,
     pub uv: ArTexCoord2D,
 }
 
@@ -122,9 +123,12 @@ impl FaceModelSession {
             };
             out_mesh.vertices[i] = ArFaceVertexInterleaved {
                 position: pos,
+                normal: ArVertex3D { x: 0.0, y: 0.0, z: 1.0 },
                 uv,
             };
         }
+        
+        compute_face_normals(&mut out_mesh.vertices);
 
         // Pemetaan Output Tensor 2: 52 Koefisien Blendshape Ekspresi Wajah
         // Tensor output memiliki bentuk [1, 52]
@@ -154,6 +158,7 @@ impl FaceTracker {
             current_mesh: ArFaceMesh {
                 vertices: [ArFaceVertexInterleaved {
                     position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+                    normal: ArVertex3D { x: 0.0, y: 0.0, z: 1.0 },
                     uv: ArTexCoord2D { u: 0.0, v: 0.0 },
                 }; FACE_MESH_VERTICES_COUNT],
                 blendshapes: [0.0; FACE_BLENDSHAPES_COUNT],
@@ -215,6 +220,7 @@ impl ArNeckExtender {
         
         let mut neck_vertices = [ArFaceVertexInterleaved {
             position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+            normal: ArVertex3D { x: 0.0, y: 0.0, z: 1.0 },
             uv: ArTexCoord2D { u: 0.0, v: 0.0 },
         }; 34];
         
@@ -232,6 +238,7 @@ impl ArNeckExtender {
                     y: v_jaw.position.y + l1 * u_down.y,
                     z: v_jaw.position.z + l1 * u_down.z,
                 },
+                normal: v_jaw.normal,
                 uv: ArTexCoord2D {
                     u: v_jaw.uv.u,
                     v: v_jaw.uv.v + 0.1,
@@ -245,6 +252,7 @@ impl ArNeckExtender {
                     y: v_jaw.position.y + l2 * u_down.y,
                     z: v_jaw.position.z + l2 * u_down.z,
                 },
+                normal: v_jaw.normal,
                 uv: ArTexCoord2D {
                     u: v_jaw.uv.u,
                     v: v_jaw.uv.v + 0.2,
@@ -271,5 +279,58 @@ impl ArNeckExtender {
             vertices: neck_vertices,
             indices,
         }
+    }
+}
+
+/// Menghitung vektor normal permukaan wajah secara radial ellipsoid
+pub fn compute_face_normals(vertices: &mut [ArFaceVertexInterleaved; FACE_MESH_VERTICES_COUNT]) {
+    let mut center = ArVertex3D { x: 0.0, y: 0.0, z: 0.0 };
+    for v in vertices.iter() {
+        center.x += v.position.x;
+        center.y += v.position.y;
+        center.z += v.position.z;
+    }
+    center.x /= FACE_MESH_VERTICES_COUNT as f32;
+    center.y /= FACE_MESH_VERTICES_COUNT as f32;
+    center.z /= FACE_MESH_VERTICES_COUNT as f32;
+
+    for v in vertices.iter_mut() {
+        let dx = v.position.x - center.x;
+        let dy = v.position.y - center.y;
+        let dz = v.position.z - center.z;
+        let len = (dx*dx + dy*dy + dz*dz).sqrt();
+        if len > 1e-5 {
+            v.normal = ArVertex3D {
+                x: dx / len,
+                y: dy / len,
+                z: dz / len,
+            };
+        } else {
+            v.normal = ArVertex3D { x: 0.0, y: 0.0, z: 1.0 };
+        }
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_normals_unit_length() {
+        let mut vertices = [ArFaceVertexInterleaved {
+            position: ArVertex3D { x: 1.0, y: 2.0, z: 3.0 },
+            normal: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+            uv: ArTexCoord2D { u: 0.0, v: 0.0 },
+        }; FACE_MESH_VERTICES_COUNT];
+
+        // Buat satu vertex berbeda posisi agar center tidak sama dengan posisinya
+        vertices[0].position = ArVertex3D { x: 10.0, y: 20.0, z: 30.0 };
+
+        compute_face_normals(&mut vertices);
+
+        // Verifikasi normal adalah unit vector (panjang = 1.0)
+        let n = vertices[0].normal;
+        let len = (n.x*n.x + n.y*n.y + n.z*n.z).sqrt();
+        assert!((len - 1.0).abs() < 1e-4);
     }
 }

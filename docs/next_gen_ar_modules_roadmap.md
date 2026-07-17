@@ -39,7 +39,7 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Dampak**: Memberikan presisi rendering 3D pada batas-batas sensitif kelopak mata dan bibir agar makeup tidak pecah atau bocor keluar dari garis bibir saat berbicara/membuka mulut.
   * **Solusi**: Modul yang melakukan Delaunay Triangulation lokal khusus untuk sub-area kosmetik (bibir atas/bawah terpisah, kelopak mata berkedip).
 
-- [ ] **6. PBR Shader & Dynamic Specular Lighting (Matte, Satin, Dewy)**
+- [x] **6. PBR Shader & Dynamic Specular Lighting (Matte, Satin, Dewy)**
   * **Prioritas**: **[PRIORITAS UTAMA - DIBUTUHKAN LANGSUNG UNTUK GLOWMATCH]**
   * **Dampak**: Membuat foundation, highlighter, dan lipstik terlihat ultra-realistis dengan memantulkan cahaya ruangan asli (kilau bergerak secara dinamis mengikuti arah lampu saat kepala menoleh).
   * **Solusi**: Fragment shader berbasis *Physically Based Rendering* (PBR) di native C++ GLES3 (GGX specular model untuk kilau basah, parametrisasi roughness/metallicness).

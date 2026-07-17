@@ -19,6 +19,7 @@ pub mod color_harmonizer;
 pub mod pbr_makeup;
 pub mod eye_contacts;
 pub mod stabilizer;
+pub mod makeup_triangulator;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
@@ -111,6 +112,7 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
     let face_mesh_shared = Arc::new(RwLock::new(ArFaceMesh {
         vertices: [ArFaceVertexInterleaved {
             position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+            normal: ArVertex3D { x: 0.0, y: 0.0, z: 1.0 },
             uv: ArTexCoord2D { u: 0.0, v: 0.0 },
         }; face::FACE_MESH_VERTICES_COUNT],
         blendshapes: [0.0; face::FACE_BLENDSHAPES_COUNT],
@@ -483,6 +485,9 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
             };
         }
 
+        // Hitung normal wajah 3D secara radial elipsoid
+        face::compute_face_normals(&mut shared_mesh.vertices);
+
         let blendshapes_slice = std::slice::from_raw_parts(blendshapes_ptr, face::FACE_BLENDSHAPES_COUNT);
         shared_mesh.blendshapes.copy_from_slice(blendshapes_slice);
 
@@ -553,6 +558,7 @@ mod tests {
         let mut neck_mesh = face::ArNeckMesh {
             vertices: [ArFaceVertexInterleaved {
                 position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+                normal: ArVertex3D { x: 0.0, y: 0.0, z: 1.0 },
                 uv: ArTexCoord2D { u: 0.0, v: 0.0 },
             }; 34],
             indices: [0; 96],
@@ -568,5 +574,60 @@ mod tests {
         assert_eq!(neck_mesh.indices[3], 17);
 
         unsafe { fizgravity_engine_release(engine_ptr) };
+    }
+}
+
+/// Mengambil indeks segitiga triangulasi untuk bibir atas (Upper Lip).
+/// Menulis indeks ke buffer out_indices dan mengembalikan jumlah indeks yang ditulis.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_get_upper_lip_indices(
+    out_indices: *mut u32,
+    max_count: c_int,
+) -> c_int {
+    if out_indices.is_null() {
+        return -1;
+    }
+    let triangles = makeup_triangulator::MakeupTriangulator::get_upper_lip_triangles();
+    let count = std::cmp::min(max_count as usize, triangles.len());
+    let slice = std::slice::from_raw_parts_mut(out_indices, count);
+    for i in 0..count {
+        slice[i] = triangles[i];
+    }
+    count as c_int
+}
+
+/// Mengambil indeks segitiga triangulasi untuk bibir bawah (Lower Lip).
+/// Menulis indeks ke buffer out_indices dan mengembalikan jumlah indeks yang ditulis.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_get_lower_lip_indices(
+    out_indices: *mut u32,
+    max_count: c_int,
+) -> c_int {
+    if out_indices.is_null() {
+        return -1;
+    }
+    let triangles = makeup_triangulator::MakeupTriangulator::get_lower_lip_triangles();
+    let count = std::cmp::min(max_count as usize, triangles.len());
+    let slice = std::slice::from_raw_parts_mut(out_indices, count);
+    for i in 0..count {
+        slice[i] = triangles[i];
+    }
+    count as c_int
+}
+
+#[cfg(test)]
+mod makeup_tests {
+    use super::*;
+
+    #[test]
+    fn test_ffi_get_lip_indices() {
+        let mut upper_indices = [0u32; 60];
+        let count = unsafe { fizgravity_engine_get_upper_lip_indices(upper_indices.as_mut_ptr(), 60) };
+        assert_eq!(count, 60);
+        assert_eq!(upper_indices[0], 61);
+
+        let mut lower_indices = [0u32; 60];
+        let count2 = unsafe { fizgravity_engine_get_lower_lip_indices(lower_indices.as_mut_ptr(), 60) };
+        assert_eq!(count2, 60);
     }
 }
