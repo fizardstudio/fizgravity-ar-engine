@@ -10,12 +10,26 @@ pub const FACE_MESH_VERTICES_COUNT: usize = 468;
 /// Jumlah parameter blendshapes wajah standar (52 ARKit blendshapes).
 pub const FACE_BLENDSHAPES_COUNT: usize = 52;
 
-/// Struktur data eksposisi FFI untuk representasi jaring wajah 3D.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArTexCoord2D {
+    pub u: c_float,
+    pub v: c_float,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArFaceVertexInterleaved {
+    pub position: ArVertex3D,
+    pub uv: ArTexCoord2D,
+}
+
+/// Struktur data eksposisi FFI untuk representasi jaring wajah 3D interleaved.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ArFaceMesh {
-    /// Array koordinat vertex 3D wajah (468 titik).
-    pub vertices: [ArVertex3D; FACE_MESH_VERTICES_COUNT],
+    /// Array vertex ter-interleave kontigu (Posisi 3D + UV 2D = 20 bytes per vertex)
+    pub vertices: [ArFaceVertexInterleaved; FACE_MESH_VERTICES_COUNT],
     /// Koefisien kekuatan blendshape untuk ekspresi wajah (52 parameter).
     pub blendshapes: [c_float; FACE_BLENDSHAPES_COUNT],
 }
@@ -97,10 +111,18 @@ impl FaceModelSession {
         for i in 0..FACE_MESH_VERTICES_COUNT {
             // Simulasi pemetaan koordinat elipsoid wajah melingkar
             let angle = (i as f32) * std::f32::consts::PI / 234.0;
-            out_mesh.vertices[i] = ArVertex3D {
+            let pos = ArVertex3D {
                 x: angle.cos() * 0.1,
                 y: angle.sin() * 0.15,
                 z: (i as f32 * 0.0001) - 0.05,
+            };
+            let uv = ArTexCoord2D {
+                u: (angle.cos() + 1.0) * 0.5,
+                v: (angle.sin() + 1.0) * 0.5,
+            };
+            out_mesh.vertices[i] = ArFaceVertexInterleaved {
+                position: pos,
+                uv,
             };
         }
 
@@ -130,7 +152,10 @@ impl FaceTracker {
 
         Self {
             current_mesh: ArFaceMesh {
-                vertices: [ArVertex3D { x: 0.0, y: 0.0, z: 0.0 }; FACE_MESH_VERTICES_COUNT],
+                vertices: [ArFaceVertexInterleaved {
+                    position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+                    uv: ArTexCoord2D { u: 0.0, v: 0.0 },
+                }; FACE_MESH_VERTICES_COUNT],
                 blendshapes: [0.0; FACE_BLENDSHAPES_COUNT],
             },
             session,

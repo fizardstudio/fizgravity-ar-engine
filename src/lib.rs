@@ -13,13 +13,18 @@ pub mod msckf;
 pub mod tsdf;
 pub mod lighting;
 pub mod extrapolator;
+pub mod segmentation;
+pub mod skin_analyzer;
+pub mod color_harmonizer;
+pub mod pbr_makeup;
+pub mod eye_contacts;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
 use std::sync::{Arc, RwLock};
 use std::sync::mpsc::{SyncSender, Receiver, sync_channel};
 
-use face::{ArFaceMesh, FaceTracker};
+use face::{ArFaceMesh, ArTexCoord2D, ArFaceVertexInterleaved, FaceTracker};
 use hand::{ArHandJoints, HandTracker};
 use physics::{PhysicsSolver};
 use splatting::{ArGaussianSplat, SplatManager};
@@ -100,7 +105,10 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
     }
 
     let face_mesh_shared = Arc::new(RwLock::new(ArFaceMesh {
-        vertices: [ArVertex3D { x: 0.0, y: 0.0, z: 0.0 }; face::FACE_MESH_VERTICES_COUNT],
+        vertices: [ArFaceVertexInterleaved {
+            position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+            uv: ArTexCoord2D { u: 0.0, v: 0.0 },
+        }; face::FACE_MESH_VERTICES_COUNT],
         blendshapes: [0.0; face::FACE_BLENDSHAPES_COUNT],
     }));
 
