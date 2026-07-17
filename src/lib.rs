@@ -21,6 +21,7 @@ pub mod eye_contacts;
 pub mod stabilizer;
 pub mod makeup_triangulator;
 pub mod texture_analyzer;
+pub mod calibration;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
@@ -96,6 +97,9 @@ pub struct FizgravityEngine {
     
     // Fase akumulasi rotasi giroskop untuk shimmer gliter fisika
     pub glitter_phase: RwLock<(f32, f32)>,
+
+    // Auto-calibrator intrinsik kamera online
+    pub calibrator: RwLock<calibration::CameraAutoCalibrator>,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -197,6 +201,7 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         extrapolator: extrapolator::MotionExtrapolator::new(0.016),
         face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(1.5, 0.15))),
         glitter_phase: RwLock::new((0.0, 0.0)),
+        calibrator: RwLock::new(calibration::CameraAutoCalibrator::new()),
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -797,5 +802,85 @@ mod priority_ffi_tests {
             fizgravity_engine_analyze_skin_health(rgb_data.as_ptr(), 320, 240, &mut roughness, &mut wrinkles)
         };
         assert_eq!(res, 0);
+    }
+}
+
+/// Melakukan kalibrasi intrinsik kamera online secara dinamis menggunakan geometri lebar wajah.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_update_auto_calibration(
+    engine_ptr: *mut c_void,
+    image_w: f32,
+    image_h: f32,
+    depth_z: f32,
+    out_focal_length: *mut f32,
+) -> c_int {
+    if engine_ptr.is_null() || out_focal_length.is_null() {
+        return -1;
+    }
+    let engine = &*(engine_ptr as *const FizgravityEngine);
+    if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
+        if let Ok(mut calibrator) = engine.calibrator.write() {
+            calibrator.update_calibration(&shared_mesh.vertices, image_w, image_h, depth_z);
+            *out_focal_length = calibrator.estimated_focal_length;
+            0
+        } else {
+            -2
+        }
+    } else {
+        -3
+    }
+}
+
+/// Menghitung koefisien ambient occlusion (AO) dinamis untuk setiap vertex jaring wajah.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_calculate_dynamic_ao(
+    engine_ptr: *mut c_void,
+    out_ao: *mut f32,
+    max_count: c_int,
+) -> c_int {
+    if engine_ptr.is_null() || out_ao.is_null() {
+        return -1;
+    }
+    let engine = &*(engine_ptr as *const FizgravityEngine);
+    if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
+        let count = std::cmp::min(max_count as usize, face::FACE_MESH_VERTICES_COUNT);
+        let ao_slice = std::slice::from_raw_parts_mut(out_ao, count);
+
+        let mut ao_temp = [1.0f32; face::FACE_MESH_VERTICES_COUNT];
+        makeup_triangulator::MakeupTriangulator::calculate_dynamic_ao(&shared_mesh.blendshapes, &mut ao_temp);
+
+        for i in 0..count {
+            ao_slice[i] = ao_temp[i];
+        }
+        0
+    } else {
+        -2
+    }
+}
+
+#[cfg(test)]
+mod medium_priority_ffi_tests {
+    use super::*;
+
+    #[test]
+    fn test_ffi_calibration_and_ao() {
+        let engine_ptr = unsafe { fizgravity_engine_init() };
+        assert!(!engine_ptr.is_null());
+
+        let mut focal = 0.0f32;
+        let res = unsafe {
+            fizgravity_engine_update_auto_calibration(engine_ptr, 640.0, 480.0, 0.675, &mut focal)
+        };
+        assert_eq!(res, 0);
+        assert!(focal > 0.0);
+
+        let mut ao_buffer = [0.0f32; 468];
+        let res2 = unsafe {
+            fizgravity_engine_calculate_dynamic_ao(engine_ptr, ao_buffer.as_mut_ptr(), 468)
+        };
+        assert_eq!(res2, 0);
+        assert!(ao_buffer[0] > 0.0);
+
+        unsafe { fizgravity_engine_release(engine_ptr) };
     }
 }

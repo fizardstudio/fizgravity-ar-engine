@@ -11,10 +11,10 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Dampak**: Mengeliminasi getaran halus (*jitter*) pada lipstik, eyeliner, dan blush-on saat wajah diam di depan kamera, sekaligus menghilangkan keterlambatan (*movement lag*) ketika wajah menoleh cepat.
   * **Solusi**: Filter low-pass adaptif yang mengubah frekuensi cutoff secara dinamis berdasarkan kecepatan gerakan.
   
-- [ ] **2. Auto-Kalibrasi Intrinsik Kamera (`src/calibration.rs`)**
+- [x] **2. Auto-Kalibrasi Intrinsik Kamera (`src/calibration.rs`)**
   * **Prioritas**: **[PRIORITAS MENENGAH - OPTIMASI LENS DISTORTION]**
   * **Dampak**: Menjamin proyeksi 3D mesh leher dan kosmetik tidak terlihat melar/distorsi pada kamera ponsel dengan lensa ultra-wide atau rasio layar non-standar.
-  * **Solusi**: Modul kalibrasi online yang mengestimasi parameter kamera ($f_x, f_y, c_x, c_y$) secara dinamis berdasarkan rasio jarak pupil mata pengguna yang konstan secara antropometri.
+  * **Solusi**: Continuous Face-Width Depth-Invariant Solver dinamis di mana focal length diselesaikan berdasarkan lebar pelipis fisik ($13.5\text{ cm}$) dan kedalaman wajah terestimasi.
 
 ---
 
@@ -54,10 +54,10 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Dampak**: Menjadi otak dari fitur analisis kesehatan kulit GlowMatch (mendeteksi kerutan, noda jerawat, kehalusan kulit) untuk memberikan rekomendasi produk makeup/skincare.
   * **Solusi**: Algoritma penganalisis tekstur kulit menggunakan filter *Local Binary Patterns* (LBP) dan operator Sobel.
 
-- [ ] **9. Bayangan Lipatan Wajah (Ambient Occlusion & Shading)**
+- [x] **9. Bayangan Lipatan Wajah (Ambient Occlusion & Shading)**
   * **Prioritas**: **[PRIORITAS MENENGAH - PENYEMPURNAAN KONTUR]**
   * **Dampak**: Memberikan efek kedalaman 3D pada kontur wajah (cuping hidung, bawah bibir, kelopak mata) sehingga riasan tidak terlihat flat.
-  * **Solusi**: Simulasi bayangan gelap pada area lipatan wajah agar objek virtual tidak terlihat seperti tempelan stiker datar.
+  * **Solusi**: Pre-calculated topology AO dengan modulasi dinamis pada rongga bibir dalam mengikuti ARKit blendshape `mouthOpen` ($B_{25}$) untuk menghindari visual flat.
 
 - [x] **10. Penyelarasan Cahaya Lingkungan Dinamis (Ambient Relighting Engine)**
   * **Prioritas**: **[PRIORITAS UTAMA - DIBUTUHKAN LANGSUNG UNTUK GLOWMATCH]**
@@ -80,7 +80,7 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Dampak**: Menghilangkan batas pemotongan kasar foundation di area dahi dekat garis rambut (menyatu secara organik dengan folikel rambut asli).
   * **Solusi**: Penggunaan *Alpha Distance Field* (ADF) dan noise Perlin di shader untuk membuat gradasi transparansi non-linear yang memudar halus saat mendekati garis hairline.
 
-- [ ] **14. Sigmoid Slider Wipe Divider (Transisi Geser Premium)**
+- [x] **14. Sigmoid Slider Wipe Divider (Transisi Geser Premium)**
   * **Prioritas**: **[PRIORITAS MENENGAH - DESAIN PREMIUM]**
   * **Dampak**: Efek visual pembanding "sebelum/sesudah" pada slider pembagi yang memiliki transisi tepi lembut (*feathering*), menghilangkan pemotongan garis kasar yang kaku.
   * **Solusi**: Blending alpha riasan menggunakan fungsi sigmoid halus di shader di koordinat X slider:

@@ -133,6 +133,41 @@ impl MakeupTriangulator {
             }
         }
     }
+
+    /// Menghitung koefisien ambient occlusion (AO) dinamis untuk setiap dari 468 vertices.
+    /// out_ao diisi dengan faktor [0.0 (gelap/terhalang) - 1.0 (terang)].
+    pub fn calculate_dynamic_ao(
+        blendshapes: &[f32; 52],
+        out_ao: &mut [f32; 468],
+    ) {
+        // 1. Set default AO ke 1.0 (terang penuh)
+        for ao in out_ao.iter_mut() {
+            *ao = 1.0;
+        }
+
+        // 2. Terapkan AO statis pada daerah lipatan wajah anatomis (hidung & mata)
+        let nose_creases = [102, 331, 294, 64, 278, 98, 327, 2, 94, 323];
+        for &idx in &nose_creases {
+            out_ao[idx] = 0.55;
+        }
+
+        let eye_corners = [133, 155, 173, 362, 382, 398, 33, 263];
+        for &idx in &eye_corners {
+            out_ao[idx] = 0.50;
+        }
+
+        // 3. Modulasikan AO area bibir dalam secara dinamis berdasarkan blendshape mouthOpen (index 25)
+        let mouth_open_coeff = blendshapes[25];
+
+        let mouth_ao = 0.15 + 0.70 * mouth_open_coeff.clamp(0.0, 1.0);
+
+        for &idx in &UPPER_LIP_INNER {
+            out_ao[idx] = mouth_ao;
+        }
+        for &idx in &LOWER_LIP_INNER {
+            out_ao[idx] = mouth_ao;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -173,5 +208,19 @@ mod tests {
 
         assert!(alphas[10] < 0.05);
         assert_eq!(alphas[0], 1.0);
+    }
+
+    #[test]
+    fn test_dynamic_ambient_occlusion() {
+        let mut blendshapes = [0.0f32; 52];
+        let mut ao = [1.0f32; 468];
+
+        blendshapes[25] = 0.0;
+        MakeupTriangulator::calculate_dynamic_ao(&blendshapes, &mut ao);
+        assert!((ao[UPPER_LIP_INNER[0]] - 0.15).abs() < 1e-4);
+
+        blendshapes[25] = 1.0;
+        MakeupTriangulator::calculate_dynamic_ao(&blendshapes, &mut ao);
+        assert!((ao[UPPER_LIP_INNER[0]] - 0.85).abs() < 1e-4);
     }
 }
