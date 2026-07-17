@@ -1,6 +1,17 @@
-//! Modul Diagnostik Kulit AI: Fitzpatrick classification, CIELAB Conversion, dan White Balance.
+//! Modul Diagnostik Kulit AI: Fitzpatrick classification, CIELAB Conversion, ITA° Skin Undertone Classifier, dan White Balance.
 
 use nalgebra::Vector3;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ItaSkinType {
+    VeryLight = 0,
+    Light = 1,
+    Intermediate = 2,
+    Tan = 3,
+    Brown = 4,
+    Dark = 5,
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -9,6 +20,8 @@ pub struct SkinAnalysisResult {
     pub skin_tone_hex: [u8; 7],    // Contoh: "#D2B48C"
     pub dark_circles_score: f32,   // 0.0 (sehat) - 1.0 (kantung mata gelap)
     pub redness_score: f32,        // 0.0 - 1.0 (kemerahan/iritasi)
+    pub ita_angle: f32,            // Sudut ITA° (-90..90 derajat)
+    pub ita_skin_type: i32,        // Nilai ItaSkinType enum sebagai i32
 }
 
 /// Mengonversi warna RGB (0..255) menjadi ruang warna CIELAB (L*, a*, b*).
@@ -55,6 +68,32 @@ pub fn rgb_to_lab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     (l_star, a_star, b_star)
 }
 
+/// Menghitung sudut Individual Typology Angle (ITA°) berdasarkan luminansi L* dan kekuningan b*
+pub fn compute_ita_angle(l: f32, b: f32) -> f32 {
+    let numerator = l - 50.0;
+    // Hindari pembagian dengan nol dengan memberikan perlindungan kecil jika b mendekati nol
+    let denominator = if b.abs() < 1e-5 { 1e-5 } else { b };
+    let angle_rad = numerator.atan2(denominator);
+    angle_rad * 180.0 / std::f32::consts::PI
+}
+
+/// Mengklasifikasikan tipe rona kulit secara klinis berdasarkan sudut ITA°
+pub fn classify_ita_skin_type(ita_angle: f32) -> ItaSkinType {
+    if ita_angle > 55.0 {
+        ItaSkinType::VeryLight
+    } else if ita_angle > 41.0 {
+        ItaSkinType::Light
+    } else if ita_angle > 28.0 {
+        ItaSkinType::Intermediate
+    } else if ita_angle > 10.0 {
+        ItaSkinType::Tan
+    } else if ita_angle > -30.0 {
+        ItaSkinType::Brown
+    } else {
+        ItaSkinType::Dark
+    }
+}
+
 pub struct SkinAnalyzer {
     pub neutral_light: Vector3<f32>, // Warna cahaya putih acuan RGB [1.0, 1.0, 1.0]
 }
@@ -72,7 +111,6 @@ impl SkinAnalyzer {
     /// * `sh_ambient`: Warna ambient rata-rata terestimasi (misalnya koefisien SH pertama/ambient).
     pub fn analyze_skin(&self, raw_skin_rgb: &[u8; 3], sh_ambient: &Vector3<f32>) -> SkinAnalysisResult {
         // 1. Lakukan kompensasi White Balance
-        // C_corrected = C_raw * (L_neutral / L_SH)
         let r_gain = if sh_ambient.x > 0.01 { self.neutral_light.x / sh_ambient.x } else { 1.0 };
         let g_gain = if sh_ambient.y > 0.01 { self.neutral_light.y / sh_ambient.y } else { 1.0 };
         let b_gain = if sh_ambient.z > 0.01 { self.neutral_light.z / sh_ambient.z } else { 1.0 };
@@ -85,8 +123,7 @@ impl SkinAnalyzer {
         let (l, a, b) = rgb_to_lab(r_corr, g_corr, b_corr);
 
         // 3. Deteksi tipe Fitzpatrick berdasarkan Luminansi L*
-        // Fitzpatrick I: L* > 80, II: 70..80, III: 60..70, IV: 50..60, V: 40..50, VI: < 40
-        let fitz = if l >= 80.0 {
+        let fit = if l >= 80.0 {
             1
         } else if l >= 70.0 {
             2
@@ -105,18 +142,23 @@ impl SkinAnalyzer {
         let hex_str = format!("#{:02X}{:02X}{:02X}", r_corr, g_corr, b_corr);
         hex.copy_from_slice(hex_str.as_bytes());
 
-        // Redness dihitung dari kanal a* (sumbu merah-hijau, a* tinggi = merah)
-        // Normalisasi redness: a* berkisar dari -128 ke 127, daerah kemerahan kulit biasanya a* > 10
+        // Redness dihitung dari kanal a*
         let redness = ((a - 5.0) / 30.0).clamp(0.0, 1.0);
 
-        // Dark circles dihitung dari penurunan kecerahan L* pada kelopak mata (disimulasikan di sini)
+        // Dark circles dihitung dari penurunan kecerahan L*
         let dark_circles = ((100.0 - l) / 100.0).clamp(0.0, 1.0);
 
+        // 4. Hitung sudut ITA° dan klasifikasikan tipenya
+        let ita_angle = compute_ita_angle(l, b);
+        let ita_skin = classify_ita_skin_type(ita_angle) as i32;
+
         SkinAnalysisResult {
-            fitzpatrick_type: fitz,
+            fitzpatrick_type: fit,
             skin_tone_hex: hex,
             dark_circles_score: dark_circles,
             redness_score: redness,
+            ita_angle,
+            ita_skin_type: ita_skin,
         }
     }
 }
@@ -128,7 +170,6 @@ mod tests {
     #[test]
     fn test_rgb_to_lab_white() {
         let (l, a, b) = rgb_to_lab(255, 255, 255);
-        // Putih sempurna harus memiliki L* mendekati 100 dan chromaticity (a*, b*) nol
         assert!((l - 100.0).abs() < 1.0);
         assert!(a.abs() < 0.5);
         assert!(b.abs() < 0.5);
@@ -138,10 +179,23 @@ mod tests {
     fn test_skin_analysis_fitzpatrick() {
         let analyzer = SkinAnalyzer::new();
         let raw_skin = [210, 180, 140]; // Light brown
-        let sh_ambient = Vector3::new(1.0, 1.0, 1.0); // Cahaya netral
+        let sh_ambient = Vector3::new(1.0, 1.0, 1.0);
 
         let result = analyzer.analyze_skin(&raw_skin, &sh_ambient);
         assert!(result.fitzpatrick_type >= 2 && result.fitzpatrick_type <= 4);
         assert_eq!(result.skin_tone_hex[0], b'#');
+    }
+
+    #[test]
+    fn test_ita_classification() {
+        // Uji Very Light (L* tinggi, b* rendah/netral)
+        let angle1 = compute_ita_angle(80.0, 10.0);
+        let t1 = classify_ita_skin_type(angle1);
+        assert_eq!(t1, ItaSkinType::VeryLight);
+
+        // Uji Dark (L* rendah, b* sedang)
+        let angle2 = compute_ita_angle(30.0, 15.0);
+        let t2 = classify_ita_skin_type(angle2);
+        assert_eq!(t2, ItaSkinType::Dark);
     }
 }

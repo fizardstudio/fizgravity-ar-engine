@@ -18,6 +18,7 @@ pub mod skin_analyzer;
 pub mod color_harmonizer;
 pub mod pbr_makeup;
 pub mod eye_contacts;
+pub mod stabilizer;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
@@ -87,6 +88,9 @@ pub struct FizgravityEngine {
     // Modul pencahayaan & ekstrapolasi (Late Latching) baru
     pub lighting_estimator: lighting::LightingEstimator,
     pub extrapolator: extrapolator::MotionExtrapolator,
+    
+    // Stabilizer adaptif untuk meniadakan jitter wajah
+    pub face_stabilizer: Arc<RwLock<stabilizer::ArFaceMeshStabilizer>>,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -185,6 +189,7 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         p2p_manager: P2PManager::new(),
         lighting_estimator: lighting::LightingEstimator::new(),
         extrapolator: extrapolator::MotionExtrapolator::new(0.016),
+        face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(1.5, 0.15))),
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -480,6 +485,11 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
 
         let blendshapes_slice = std::slice::from_raw_parts(blendshapes_ptr, face::FACE_BLENDSHAPES_COUNT);
         shared_mesh.blendshapes.copy_from_slice(blendshapes_slice);
+
+        // Stabilisasikan face mesh secara adaptif menggunakan One-Euro Filter
+        if let Ok(mut stabilizer) = engine.face_stabilizer.write() {
+            stabilizer.stabilize_face_mesh(&mut shared_mesh.vertices, 0.016);
+        }
         
         0 // Sukses
     } else {
