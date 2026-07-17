@@ -212,9 +212,17 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
             frame_bytes_size,
         );
         
-        // Kirim secara non-blocking. Jika worker thread sedang sibuk, segera kembalikan buffer ke recycler.
-        if let Err(std::sync::mpsc::TrySendError::Full(buf)) = engine.ml_sender.try_send(image_buffer) {
-            let _ = engine.recycle_sender.send(buf);
+        // Kirim secara non-blocking. Jika worker thread sedang sibuk atau mati (disconnected), tangani secara aman.
+        if let Err(err) = engine.ml_sender.try_send(image_buffer) {
+            match err {
+                std::sync::mpsc::TrySendError::Full(buf) => {
+                    let _ = engine.recycle_sender.send(buf);
+                }
+                std::sync::mpsc::TrySendError::Disconnected(_buf) => {
+                    // Terjadi jika thread pekerja ML mengalami kepanikan (panic) atau tertutup.
+                    eprintln!("[Fizgravity AR Warning] ML worker thread has disconnected or panicked!");
+                }
+            }
         }
     }
     
