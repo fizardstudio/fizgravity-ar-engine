@@ -114,26 +114,38 @@ impl MsckfFilter {
         imu.r_gi = imu.r_gi * dr;
 
         // 2. Propagasi matriks kovariansi kesalahan EKF P = Phi * P * Phi^T + Q
-        // Sesuai MSCKF, kita hanya memperbarui blok inersia 15x15 dan blok korelasi silang kamera.
-        let dim = self.state.covariance.nrows();
+        // Ekstrak angular velocity dan acceleration rata-rata dari integrasi untuk menyusun Phi
+        let w_corrected = if dt > 1e-6 { crate::math::log_map(&dr) / dt } else { Vector3::zeros() };
+        let a_corrected = if dt > 1e-6 { dv / dt } else { Vector3::zeros() };
+
+        let mut phi = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(Dynamic::new(15), Dynamic::new(15));
+        let w_skew = skew_symmetric(&w_corrected);
+        let a_skew = skew_symmetric(&a_corrected);
+        let r_mat = imu.r_gi.matrix();
+
+        phi.slice_mut((0, 0), (3, 3)).copy_from(&(Matrix3::identity() - w_skew * dt));
+        phi.slice_mut((0, 9), (3, 3)).copy_from(&(-Matrix3::identity() * dt));
+        phi.slice_mut((3, 6), (3, 3)).copy_from(&(Matrix3::identity() * dt));
+        phi.slice_mut((6, 0), (3, 3)).copy_from(&(-r_mat * a_skew * dt));
+        phi.slice_mut((6, 12), (3, 3)).copy_from(&(-r_mat * dt));
+
+        let p_ii = self.state.covariance.slice((0, 0), (15, 15));
+        let q_imu = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(Dynamic::new(15), Dynamic::new(15)) * 1e-4;
+        let p_ii_new = &phi * p_ii * phi.transpose() + q_imu;
         
-        // Buat matriks transisi keadaan Phi (15x15 untuk bagian IMU)
-        let _phi_imu = Matrix3::<f32>::identity(); // Secara teoretis Phi adalah matriks jacobian 15x15 penuh
-        // Di sini kita formulasikan block transisi Jacobian rotasi-bias sederhana:
-        // Phi_theta_bg = -R_gi * dt
-        let _phi_theta_bg = -imu.r_gi.matrix() * dt;
+        // Tulis kembali P_ii_new ke covariance (top-left)
+        self.state.covariance.slice_mut((0, 0), (15, 15)).copy_from(&p_ii_new);
 
-        // Update blok kovariansi IMU internal (P_ii = Phi_i * P_ii * Phi_i^T + Q_i)
-        // Untuk penyederhanaan implementasi, kita perbarui kovariansi dengan noise konstan Q:
-        let q_imu = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(
-            Dynamic::new(15),
-            Dynamic::new(15),
-        ) * 1e-4;
-
-        for i in 0..15 {
-            for j in 0..15 {
-                self.state.covariance[(i, j)] += q_imu[(i, j)];
-            }
+        // Propagasikan korelasi silang kamera (cross-covariance) P_ic = Phi * P_ic
+        let num_cameras = self.state.camera_states.len();
+        if num_cameras > 0 {
+            let p_ic = self.state.covariance.slice((0, 15), (15, 6 * num_cameras));
+            let p_ic_new = &phi * p_ic;
+            
+            // Salin P_ic_new ke covariance (top-right)
+            self.state.covariance.slice_mut((0, 15), (15, 6 * num_cameras)).copy_from(&p_ic_new);
+            // Salin P_ci_new ke covariance (bottom-left)
+            self.state.covariance.slice_mut((15, 0), (6 * num_cameras, 15)).copy_from(&p_ic_new.transpose());
         }
     }
 
@@ -172,8 +184,12 @@ impl MsckfFilter {
         // Hitung baris/kolom korelasi silang (cross-covariance) Jacobian kamera terhadap bagian IMU:
         // J_c = [ J_r, J_p ] (matriks 6x15)
         let mut j_c = OMatrix::<f32, Dynamic, Dynamic>::zeros_generic(Dynamic::new(6), Dynamic::new(15));
-        j_c.slice_mut((0, 0), (3, 3)).copy_from(&Matrix3::identity()); // Turunan rotasi
-        j_c.slice_mut((3, 3), (3, 3)).copy_from(&Matrix3::identity()); // Turunan posisi
+        j_c.slice_mut((0, 0), (3, 3)).copy_from(&Matrix3::identity()); // Turunan rotasi terhadap rotasi IMU
+        j_c.slice_mut((3, 3), (3, 3)).copy_from(&Matrix3::identity()); // Turunan posisi terhadap posisi IMU
+        
+        // Turunan posisi kamera terhadap rotasi IMU: -R_gi * [p_c_i]_x (Cross-term ekstrinsik)
+        let p_ci_skew = skew_symmetric(&self.p_c_i);
+        j_c.slice_mut((3, 0), (3, 3)).copy_from(&(-imu.r_gi.matrix() * p_ci_skew));
 
         // P_ic_new = P_ii * J_c^T
         let p_ii = self.state.covariance.slice((0, 0), (15, 15));
@@ -186,6 +202,48 @@ impl MsckfFilter {
         // P_cc = J_c * P_ii * J_c^T + R_camera_noise -> P_cc = J_c * P_ic
         let p_cc = &j_c * &p_ic;
         new_cov.slice_mut((old_dim, old_dim), (6, 6)).copy_from(&p_cc);
+
+        self.state.covariance = new_cov;
+
+        // Batasi ukuran sliding window dengan membuang klon kamera tertua (marginalization)
+        if self.state.camera_states.len() > self.max_window_size {
+            self.marginalize_oldest();
+        }
+    }
+
+    /// Membuang klon kamera tertua (indeks 0) dari sliding window dan covariance matrix P
+    /// untuk mencegah overhead komputasi akibat dimensi matriks yang membesar tanpa batas.
+    pub fn marginalize_oldest(&mut self) {
+        if self.state.camera_states.is_empty() {
+            return;
+        }
+        self.state.camera_states.remove(0);
+
+        let old_dim = self.state.covariance.nrows();
+        let new_dim = old_dim - 6;
+
+        let mut new_cov = OMatrix::<f32, Dynamic, Dynamic>::zeros_generic(
+            Dynamic::new(new_dim),
+            Dynamic::new(new_dim),
+        );
+
+        // Salin blok kovariansi IMU internal (15x15)
+        new_cov.slice_mut((0, 0), (15, 15)).copy_from(&self.state.covariance.slice((0, 0), (15, 15)));
+
+        // Salin blok klon kamera sisa (melewati indeks 15..21)
+        if new_dim > 15 {
+            // Salin kolom korelasi silang (top-right)
+            new_cov.slice_mut((0, 15), (15, new_dim - 15))
+                .copy_from(&self.state.covariance.slice((0, 21), (15, old_dim - 21)));
+
+            // Salin baris korelasi silang (bottom-left)
+            new_cov.slice_mut((15, 0), (new_dim - 15, 15))
+                .copy_from(&self.state.covariance.slice((21, 0), (old_dim - 21, 15)));
+
+            // Salin kovariansi kamera-kamera (bottom-right)
+            new_cov.slice_mut((15, 15), (new_dim - 15, new_dim - 15))
+                .copy_from(&self.state.covariance.slice((21, 21), (old_dim - 21, old_dim - 21)));
+        }
 
         self.state.covariance = new_cov;
     }
@@ -261,5 +319,42 @@ impl MsckfFilter {
         // Perbarui Matriks Kovariansi P = (I - K * H_o) * P
         let identity = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(Dynamic::new(state_dim), Dynamic::new(state_dim));
         self.state.covariance = (identity - &k * h_o) * p;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_msckf_augmentation_and_marginalization() {
+        // Inisialisasi filter dengan max window size 3
+        let mut filter = MsckfFilter::new(3);
+        assert_eq!(filter.state.camera_states.len(), 0);
+        assert_eq!(filter.state.covariance.nrows(), 15);
+
+        // 1. Augmentasi frame 1
+        filter.augment_state(1);
+        assert_eq!(filter.state.camera_states.len(), 1);
+        assert_eq!(filter.state.covariance.nrows(), 21);
+
+        // 2. Augmentasi frame 2
+        filter.augment_state(2);
+        assert_eq!(filter.state.camera_states.len(), 2);
+        assert_eq!(filter.state.covariance.nrows(), 27);
+
+        // 3. Augmentasi frame 3
+        filter.augment_state(3);
+        assert_eq!(filter.state.camera_states.len(), 3);
+        assert_eq!(filter.state.covariance.nrows(), 33);
+
+        // 4. Augmentasi frame 4 (harus memicu marginalisasi klon tertua frame 1)
+        filter.augment_state(4);
+        assert_eq!(filter.state.camera_states.len(), 3);
+        // Dimensi covariance harus kembali ke 33 (15 + 6 * 3) bukan 39
+        assert_eq!(filter.state.covariance.nrows(), 33);
+        
+        // Kamera tertua harus bernilai frame_id = 2
+        assert_eq!(filter.state.camera_states[0].frame_id, 2);
     }
 }
