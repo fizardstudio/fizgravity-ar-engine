@@ -65,6 +65,27 @@ pub fn log_map(r: &Rotation3<f32>) -> Vector3<f32> {
         );
     }
     
+    // Penanganan singularitas sudut 180 derajat (theta mendekati PI) untuk mencegah pembagian dengan nol (NaN)
+    if (theta - std::f32::consts::PI).abs() < 1e-5 {
+        let xx = ((matrix[(0, 0)] + 1.0) * 0.5).max(0.0).sqrt();
+        let yy = ((matrix[(1, 1)] + 1.0) * 0.5).max(0.0).sqrt();
+        let zz = ((matrix[(2, 2)] + 1.0) * 0.5).max(0.0).sqrt();
+        
+        let mut u = Vector3::new(xx, yy, zz);
+        
+        if matrix[(0, 1)] < 0.0 {
+            u.y = -u.y;
+        }
+        if matrix[(0, 2)] < 0.0 {
+            u.z = -u.z;
+        }
+        if xx < 1e-5 && matrix[(1, 2)] < 0.0 {
+            u.z = -u.z;
+        }
+        
+        return u * std::f32::consts::PI;
+    }
+    
     let scale = theta / (2.0 * theta.sin());
     Vector3::new(
         (matrix[(2, 1)] - matrix[(1, 2)]) * scale,
@@ -131,5 +152,17 @@ mod tests {
         assert!((w.x - w_recovered.x).abs() < 1e-10);
         assert!((w.y - w_recovered.y).abs() < 1e-10);
         assert!((w.z - w_recovered.z).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pi_singularity() {
+        // Uji rotasi mendekati 180 derajat (hampir PI)
+        let w = Vector3::new(0.0, 0.0, std::f32::consts::PI - 1e-6);
+        let r = exp_map(&w);
+        let w_recovered = log_map(&r);
+        
+        assert!((w.x - w_recovered.x).abs() < 1e-4);
+        assert!((w.y - w_recovered.y).abs() < 1e-4);
+        assert!((w.z - w_recovered.z).abs() < 1e-4);
     }
 }

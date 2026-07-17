@@ -77,25 +77,23 @@ impl ImuPreintegrator {
         let r_current = self.delta_r;
         let v_current = self.delta_v;
 
-        // 2. Hitung delta rotasi langkah ini (dR)
+        // 2. Hitung delta rotasi langkah ini (dR) dan rotasi titik tengah (r_mid)
         let delta_theta = w_corrected * dt;
         let d_r = exp_map(&delta_theta);
-
-        // 3. Update Variabel Pra-integrasi Utama
-        // Delta R_ij = Delta R_ik * dR
-        self.delta_r = r_current * d_r;
         
-        // Delta p_ij = Delta p_ik + Delta v_ik * dt + 0.5 * Delta R_ik * a_corrected * dt^2
-        let acc_term = r_current * a_corrected;
+        // Midpoint rotation: R_mid = R_current * Exp(0.5 * w_corrected * dt)
+        let r_mid = r_current * exp_map(&(w_corrected * (0.5 * dt)));
+
+        // 3. Update Variabel Pra-integrasi Utama (Midpoint Integration)
+        let acc_term = r_mid * a_corrected;
         self.delta_p += v_current * dt + acc_term * (0.5 * dt * dt);
-        
-        // Delta v_ij = Delta v_ik + Delta R_ik * a_corrected * dt
         self.delta_v += acc_term * dt;
+        self.delta_r = r_current * d_r;
 
-        // 4. Propagasi Matriks Jacobians (Taylor Expansion Orde 1)
-        // Kita hitung matriks miring-simetris akselerasi untuk Jacobian silang
+        // 4. Propagasi Matriks Jacobians (Midpoint Integration - Taylor Expansion Orde 1)
+        // Kita hitung matriks miring-simetris akselerasi untuk Jacobian silang menggunakan rotasi titik tengah
         let acc_skew = skew_symmetric(&a_corrected);
-        let r_matrix = r_current.matrix();
+        let r_matrix = r_mid.matrix();
 
         // Update Jacobians posisi
         self.jacobian_p_bg += self.jacobian_v_bg * dt - r_matrix * acc_skew * self.jacobian_r_bg * (0.5 * dt * dt);

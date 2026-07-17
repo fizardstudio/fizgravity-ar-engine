@@ -13,6 +13,8 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 libc = "0.2"
 # For vector, matrix, and quaternion algebra
 nalgebra = { version = "0.32", features = ["serde-serialize"] }
+# Non-cryptographic fast hashing for spatial block coordinate keys
+rustc-hash = "1.1.0"
 
 [profile.release]
 opt-level = 3

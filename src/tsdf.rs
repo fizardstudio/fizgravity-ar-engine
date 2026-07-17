@@ -1,7 +1,7 @@
 //! Modul Rekonstruksi Volumetrik Spasial berbasis Hashing Voxel TSDF (Truncated Signed Distance Function).
 //! Menyediakan representasi 3D padat dari lingkungan fisik dengan alokasi memori dinamis hemat RAM.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use nalgebra::{Vector3, Matrix3, Rotation3};
 
 /// Ukuran lebar satu voxel block dalam jumlah voxel (8x8x8 = 512 voxels per block).
@@ -51,8 +51,8 @@ pub struct TsdfVolume {
     pub voxel_size: f32,
     /// Jarak pemangkasan (truncation distance) SDF (misal 4.0 * voxel_size)
     pub truncation_dist: f32,
-    /// Tabel hash spasial yang memetakan koordinat block ke alokasi memori voxel block
-    pub hash_table: HashMap<BlockCoords, VoxelBlock>,
+    /// Tabel hash spasial yang memetakan koordinat block ke alokasi memori voxel block (FxHashMap untuk efisiensi tinggi)
+    pub hash_table: FxHashMap<BlockCoords, VoxelBlock>,
 }
 
 impl TsdfVolume {
@@ -60,7 +60,7 @@ impl TsdfVolume {
         Self {
             voxel_size,
             truncation_dist,
-            hash_table: HashMap::new(),
+            hash_table: FxHashMap::default(),
         }
     }
 
