@@ -120,13 +120,17 @@ impl MsckfFilter {
 
         let mut phi = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(Dynamic::new(15), Dynamic::new(15));
         let w_skew = skew_symmetric(&w_corrected);
-        let a_skew = skew_symmetric(&a_corrected);
+        
+        // Putar akselerasi dari keyframe frame (b_i) ke body frame aktif (b_k) menggunakan delta_r transpose
+        let delta_r = preintegrator.delta_r;
+        let a_local = delta_r.transpose() * a_corrected;
+        let a_local_skew = skew_symmetric(&a_local);
         let r_mat = imu.r_gi.matrix();
 
         phi.slice_mut((0, 0), (3, 3)).copy_from(&(Matrix3::identity() - w_skew * dt));
         phi.slice_mut((0, 9), (3, 3)).copy_from(&(-Matrix3::identity() * dt));
         phi.slice_mut((3, 6), (3, 3)).copy_from(&(Matrix3::identity() * dt));
-        phi.slice_mut((6, 0), (3, 3)).copy_from(&(-r_mat * a_skew * dt));
+        phi.slice_mut((6, 0), (3, 3)).copy_from(&(-r_mat * a_local_skew * dt));
         phi.slice_mut((6, 12), (3, 3)).copy_from(&(-r_mat * dt));
 
         let p_ii = self.state.covariance.slice((0, 0), (15, 15));
