@@ -700,7 +700,8 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_glitter_shimmer_shift(
         let rot_x = gyro_x * cos_r - gyro_y * sin_r;
         let rot_y = gyro_x * sin_r + gyro_y * cos_r;
 
-        let decay = 0.96;
+        let lambda = 2.45f32; // Kecepatan peluruhan (half-life ~0.28 detik, setara 0.96 pada 60fps)
+        let decay = (-lambda * dt).exp();
         phase.0 = (phase.0 + rot_x * dt) * decay;
         phase.1 = (phase.1 + rot_y * dt) * decay;
 

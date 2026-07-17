@@ -58,23 +58,19 @@ impl SkinTextureAnalyzer {
             for x in 1..(roi_w - 1) {
                 let center_val = gray_roi[y * roi_w + x];
                 
-                // Hitung kontras lokal (deviasi standar sekitar 3x3)
-                let mut mean = 0.0f32;
+                // Hitung kontras lokal (deviasi standar sekitar 3x3) dalam satu loop
+                let mut sum = 0.0f32;
+                let mut sum_sq = 0.0f32;
                 for ny in (y-1)..=(y+1) {
                     for nx in (x-1)..=(x+1) {
-                        mean += gray_roi[ny * roi_w + nx];
+                        let val = gray_roi[ny * roi_w + nx];
+                        sum += val;
+                        sum_sq += val * val;
                     }
                 }
-                mean /= 9.0;
-
-                let mut var = 0.0f32;
-                for ny in (y-1)..=(y+1) {
-                    for nx in (x-1)..=(x+1) {
-                        let diff = gray_roi[ny * roi_w + nx] - mean;
-                        var += diff * diff;
-                    }
-                }
-                var = (var / 9.0).sqrt();
+                let mean = sum / 9.0;
+                let variance = (sum_sq / 9.0 - mean * mean).max(0.0);
+                let var = variance.sqrt();
                 local_variance_sum += var;
 
                 // Threshold dinamis berdasarkan kontras lokal (tau * variance)

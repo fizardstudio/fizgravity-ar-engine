@@ -110,19 +110,21 @@ impl MakeupTriangulator {
 
         for i in 0..468 {
             let v_pos = face_vertices[i].position;
-            let mut min_dist = f32::MAX;
+            let mut min_dist_sq = f32::MAX;
             for &hair_idx in &hairline_indices {
                 if hair_idx < 468 {
                     let h_pos = face_vertices[hair_idx].position;
                     let dx = v_pos.x - h_pos.x;
                     let dy = v_pos.y - h_pos.y;
                     let dz = v_pos.z - h_pos.z;
-                    let dist = (dx*dx + dy*dy + dz*dz).sqrt();
-                    if dist < min_dist {
-                        min_dist = dist;
+                    let dist_sq = dx*dx + dy*dy + dz*dz;
+                    if dist_sq < min_dist_sq {
+                        min_dist_sq = dist_sq;
                     }
                 }
             }
+
+            let min_dist = min_dist_sq.sqrt();
 
             // Jika jarak ke hairline sangat dekat (< 3.5cm), mulailah memudar secara non-linear (sigmoid/smoothstep)
             let blend_radius = 0.035;
