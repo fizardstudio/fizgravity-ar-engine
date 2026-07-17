@@ -13,33 +13,17 @@ Mesin ini ditulis dalam bahasa **Rust** untuk menjamin keamanan memori (*thread-
 *   **Penyelarasan Frame Percepatan EKF:** Memproyeksikan percepatan rata-rata dari koordinat keyframe ($b_i$) ke body frame aktif saat ini ($b_k$) menggunakan transpose rotasi relatif:
     $$\mathbf{a}_{local} = \Delta R^T \cdot \mathbf{a}_{b_i}$$
     Ini memastikan blok matriks transisi kecepatan-orientasi $\Phi_{v, \theta} = -R_{gi} \cdot [\mathbf{a}_{local}]_\times \cdot dt$ konsisten secara spasial, mencegah drift/divergensi filter EKF.
-*   **Marginalisasi Kovariansi Dinamis:** Memangkas klon kamera tertua saat sliding window melebihi kapasitas `max_window_size` melalui penyusutan kovariansi dari dimensi $15 + 6N$ ke $15 + 6(N-1)$. Ini melenyapkan penumpukan memori dan overhead komputasi CPU akibat ukuran matriks yang membesar tanpa batas.
-*   **Joseph Form Covariance Update:** Menjamin stabilitas numerik floating-point `f32` dengan menjaga kovariansi $P$ tetap simetris dan positif-semi-definit melalui persamaan:
-    $$P = (I - K \cdot H) \cdot P \cdot (I - K \cdot H)^T + K \cdot R \cdot K^T$$
-*   **Dynamic Late Latching (Inertial Extrapolator):** Memprediksi pose kamera masa depan menggunakan sensor IMU 1000Hz dengan horizon delta waktu dinamis yang diumpankan dari render loop C++ dan orientasi aktif yang diekstrak dari pose kuaternion aktual (meniadakan getaran/jitter visual jika FPS berubah dinamis).
+*   **Joseph Form Covariance Update:** Menjamin stabilitas numerik floating-point `f32` dengan menjaga kovariansi $P$ tetap simetris dan positif-semi-definit.
+*   **Dynamic Late Latching (Inertial Extrapolator):** Memprediksi pose kamera masa depan menggunakan sensor IMU 1000Hz dengan horizon delta waktu dinamis.
 
-### 2. Rekonstruksi Spasial & Oklusi
-*   **Spatial Voxel Hashing (TSDF) Terproteksi:** Memetakan lingkungan 3D padat secara real-time dengan alokasi memori tabel hash spasial yang hemat RAM. Rentang raycast dibatasi menggunakan batas bawah `.max(0.0)` untuk mencegah proyeksi negatif (alokasi voxel palsu di belakang kamera) saat kamera berdekatan dengan permukaan.
-*   **Bilateral Guided Depth-Completion:** Menggabungkan data sensor kedalaman LiDAR renggang dengan garis kontur kamera RGB resolusi tinggi untuk menghasilkan batas oklusi sub-piksel yang tajam.
-*   **3D Gaussian Splatting (3DGS):** Mengkloning lingkungan fisik menjadi representasi awan titik elipsoid fotorealistik yang menangkap transparansi dan pantulan cahaya nyata.
-
-### 3. Diagnostik AI & Teori Musiman (GlowMatch)
-*   **Koreksi Cahaya White Balance (SH):** Melakukan normalisasi keseimbangan warna putih (*white balance*) menggunakan 9 koefisien Harmonik Sferis (SH Orde 2) untuk membatalkan bias warna lampu ruangan (*color cast*):
-    $$C_{corrected} = C_{raw} \cdot \left( \frac{L_{neutral}}{L_{SH}} \right)$$
-*   **Diagnostik Kulit CIELAB:** Mengonversi warna RGB kulit terkompensasi ke ruang warna **CIELAB** ($L^*, a^*, b^*$). Mengidentifikasi tipe Fitzpatrick (I-VI) secara linier dari luminansi $L^*$, mengukur kemerahan/iritasi kulit (*redness*) dari sumbu merah-hijau $a^*$, serta kantung mata gelap (*dark circles*) dari kelopak mata bawah.
-*   **Harmonisasi Warna Musiman:** Mengklasifikasikan tipe musim kecantikan pengguna (Spring, Summer, Autumn, Winter) berdasarkan jarak Euclidean terdekat di dalam ruang 3D koordinat CIELAB:
-    $$d = \sqrt{(L_1^* - L_2^*)^2 + (a_1^* - a_2^*)^2 + (b_1^* - b_2^*)^2}$$
-    menghasilkan rekomendasi shade kosmetik yang deterministik dan stabil dibandingkan aturan heuristik kaku.
-
-### 4. Rendering Premium & Oklusi Rambut/Tangan
-*   **Segmentasi Oklusi Anti-Flicker:** Meredam getaran tepi segmentasi tangan/rambut lewat **Temporal Exponential Smoothing** (Filter IIR Orde 1) pada masker alpha:
-    $$M_{smooth}^{(t)} = \alpha \cdot M^{(t)} + (1 - \alpha) \cdot M_{smooth}^{(t-1)}$$
-*   **Riasan Fisik PBR Seluler:** Mengatur properti kehalusan (roughness), logam (metallic), dan kepekatan riasan (sheer blending) menggunakan GGX NDF dan **Aproksimasi Fresnel Schlick** untuk rendering specular yang optimal pada ponsel.
-*   **Proyeksi Iris Sferis & Dilatasi Pupil:** Memetakan tekstur softlens warna secara sferis menggunakan koordinat polar $\theta, \phi$ pada elipsoid iris untuk menghilangkan distorsi visual di pinggiran lensa mata, serta menyempitkan/memperlebar pupil secara dinamis sesuai intensitas cahaya ambient.
-
-### 5. Optimalisasi Memori Lintas-Thread
-*   **VBO Interleaved Layout:** Menyatukan posisi 3D (12 bytes) dan koordinat UV (8 bytes) wajah ke dalam struktur kontigu kontinu **`ArFaceVertexInterleaved`** (20 bytes per vertex). Mengurangi cache-misses memori VRAM GPU hingga **~40%** saat digambar melalui panggilan GPU shader.
-*   **Pre-allocated Triple Buffering Pipeline:** Menggunakan bounded channels `sync_channel::<Vec<u8>>(1)` dan recycler channel untuk mendaur ulang total 3 buffer frame tanpa memicu alokasi heap baru (`malloc`) di loop kamera 60Hz. Penggabungan tracker wajah dan tangan dalam satu worker thread memotong proses copy data kamera hingga 50%.
+### 2. Spesialisasi Kecantikan & Riasan Premium (GlowMatch)
+*   **Continuous Face-Width Auto-Calibration Solver:** Mengoreksi parameter fokal lensa secara dinamis untuk meniadakan distorsi lensa ultra-wide menggunakan rasio lebar-tinggi wajah antropometri ($13.5\text{ cm}$) dan sudut penolehan kepala (yaw-angle foreshortening compensation).
+*   **Topology-Guided Dynamic Ambient Occlusion:** Memberikan shading kedalaman wajah pada celah bibir secara real-time yang dimodulasikan secara dinamis mengikuti blendshape `mouthOpen` ($B_{25}$) untuk menghindari visual datar.
+*   **Skin Detail High-Pass Blending Shader:** Mempertahankan pori-pori kulit asli pengguna di bawah lapisan foundation virtual.
+*   **ROI Local Contrast LBP & Sobel Wrinkles Analyzer:** Menganalisis tingkat kehalusan kulit (roughness) di area pipi dan intensitas kerutan (wrinkles) di dahi menggunakan filter LBP lokal dan operator gradien Sobel.
+*   **McCamy Color Temperature Ambient Relighting:** Mengestimasi suhu warna lampu ruangan (Kelvin) menggunakan formula McCamy dan intensitas cahaya dari koefisien Spherical Harmonics untuk mengoreksi bias warna riasan.
+*   **Leaky Integrator Specular Glitter Shimmer:** Menggeser koordinat noise voronoi highlighter berdasarkan orientasi layar HP dan rotasi roll/pitch giroskop tanpa drift tak terbatas.
+*   **Forehead Geodesic Blending Mask:** Menghasilkan batas gradasi foundation yang memudar halus (smoothstep) ketika mendekati garis rambut dekat dahi (hairline).
 
 ---
 
@@ -51,108 +35,110 @@ Fizgravity AR Engine/
 │   ├── PRD_AR_Engine.md            # Spesifikasi Persyaratan Produk lengkap
 │   ├── Project_Plan_Roadmap.md     # Peta jalan pengembangan modular 6 Fase
 │   ├── comparison_report.md        # Laporan komparasi jujur dengan engine dunia
-│   ├── system_audit_report_v2.md   # Hasil audit sistem V2 (Kovarians & Raycast)
-│   ├── system_audit_report_v3.md   # Hasil audit sistem V3 (Matematika Geometri VIO)
-│   └── glowmatch_brainstorming_report.md # Blueprint rekayasa matematika kosmetik GlowMatch
+│   └── next_gen_ar_modules_roadmap.md # Daftar periksa modul AR kecantikan GlowMatch
 ├── include/
 │   └── ar_bridge.h                 # Header jembatan interoperabilitas C++ (C-ABI FFI)
 ├── src/
-│   ├── face.rs                     # Modul AI Face mesh, blendshapes, & interleaved VBO
-│   ├── hand.rs                     # Modul AI Hand joints tracking 21 sendi
-│   ├── imu.rs                      # Modul IMU Pre-integration & Jacobians bias
+│   ├── face.rs                     # Modul AI Face mesh, normal, & interleaved VBO
+│   ├── calibration.rs              # Modul auto-kalibrasi fokal dinamis terkompensasi yaw
+│   ├── texture_analyzer.rs         # Modul analisis kesehatan kulit LBP & Sobel
+│   ├── makeup_triangulator.rs      # Triangulasi Delaunay bibir, hairline & dynamic AO
+│   ├── skin_analyzer.rs            # ITA° skin classifier & Fitzpatrick di CIELAB
+│   ├── lighting.rs                 # Estimator 9 koefisien SH & suhu warna McCamy
 │   ├── lib.rs                      # Titik masuk ekspor FFI & tipe data FFI C-ABI
-│   ├── math.rs                     # Grup Lie SO(3) & aljabar Lie so(3) manifold
-│   ├── msckf.rs                    # Filter navigasi sliding window MSCKF EKF
-│   ├── p2p.rs                      # Modul sinkronisasi peta kolaboratif libp2p
-│   ├── physics.rs                  # Abstraksi solver fisika Rapier3D
-│   ├── splatting.rs                # Modul representasi data 3D Gaussian Splats
-│   ├── tsdf.rs                     # Modul pemetaan volumetrik Voxel Hashing TSDF
-│   ├── lighting.rs                 # Estimator koefisien Harmonik Sferis ambient
-│   ├── extrapolator.rs             # Late Latching motion extrapolator
-│   ├── segmentation.rs             # Filter IIR oklusi masker rambut/tangan
-│   ├── skin_analyzer.rs            # Konversi CIELAB & Fitzpatrick skin diagnostik
-│   ├── color_harmonizer.rs         # Seasonal color harmonizer jarak Euclidean
-│   ├── pbr_makeup.rs               # Estimasi rendering GGX Cook-Torrance & Schlick
-│   └── eye_contacts.rs             # Pelacakan iris sferis & dilatasi pupil dinamis
+│   ├── stabilizer.rs               # Modul One-Euro filter dengan delta waktu adaptif
+│   └── msckf.rs                    # Filter navigasi sliding window MSCKF EKF
 └── Cargo.toml                      # Konfigurasi dependensi Cargo Rust
+```
+
+---
+
+## 💄 Panduan Integrasi FFI Jembatan C-ABI (GlowMatch)
+
+Berikut adalah panduan fungsi FFI C-ABI yang diekspos oleh `Fizgravity AR Engine` untuk digunakan di Kotlin JNI (Android) atau Objective-C/C++ (iOS).
+
+### 1. Inisialisasi & Set Data Kamera
+```cpp
+// 1. Inisialisasi instansi mesin
+void* engine = fizgravity_engine_init();
+
+// 2. Set koordinat landmark wajah dari ML Kit (Auto-stabilisasi & estimasi normal VBO terpicu)
+// vertices: 468 titik landmark wajah (dalam piksel)
+// blendshapes: 52 koefisien blendshape ARKit
+int res = fizgravity_engine_set_face_mesh(engine, vertices_ptr, blendshapes_ptr);
+```
+
+### 2. Estimasi & Koreksi Cahaya Sekitar (Ambient Relighting)
+```cpp
+float out_temp = 0.0f;      // Suhu warna dalam Kelvin (misal: 3000K untuk hangat, 6500K untuk daylight)
+float out_intensity = 0.0f; // Tingkat kecerahan (0.0 - 1.0)
+
+// Mengambil warna lampu sekitar untuk diumpankan ke shader pencocokan riasan
+fizgravity_engine_get_ambient_cct_and_intensity(engine, &out_temp, &out_intensity);
+```
+
+### 3. Analisis Kesehatan Kulit Scanner Kosmetik
+```cpp
+float roughness = 0.0f; // Tingkat kekasaran kulit pipi (0.0 = super mulus, 1.0 = kasar)
+float wrinkles = 0.0f;  // Tingkat kerutan dahi (0.0 = kencang, 1.0 = keriput)
+
+// image_rgb: pointer ke buffer gambar RGB kamera (640x480 piksel)
+fizgravity_engine_analyze_skin_health(image_rgb, 640, 480, &roughness, &wrinkles);
+```
+
+### 4. Kilau Shimmer Fisik Berbasis Giroskop (IMU Specular Shimmer)
+```cpp
+float shift_x = 0.0f;
+float shift_y = 0.0f;
+
+// Hitung pergeseran koordinat tekstur gliter di dahi/pipi fragment shader
+// gyro_x, gyro_y: data sensor kecepatan sudut giroskop
+// dt: interval waktu frame render
+// screen_rotation_degrees: rotasi orientasi layar HP (0, 90, 180, 270)
+fizgravity_engine_calculate_glitter_shimmer_shift(
+    engine, gyro_x, gyro_y, gyro_z, dt, screen_rotation_degrees, &shift_x, &shift_y
+);
+```
+
+### 5. Masking Batas Halus Tepi Rambut (Hairline Soft-Blending Mask)
+```cpp
+float alphas[468]; // Array alpha per-vertex wajah
+
+// Mengisi nilai alpha (0.0 - 1.0) untuk ke-468 vertex wajah
+// Vertex dekat garis hairline dahi akan memiliki alpha memudar halus mendekati 0.0
+fizgravity_engine_calculate_hairline_blending(engine, alphas, 468);
+```
+
+### 6. Auto-Kalibrasi & Penyelaras Lensa HP (Lens Distortion Corrector)
+```cpp
+float focal_length = 0.0f; // Estimasi parameter focal length piksel terkalibrasi
+
+// Menghitung focal length secara dinamis terkompensasi penolehan kepala (yaw)
+// depth_z: estimasi jarak kepala dari kamera (dalam meter)
+fizgravity_engine_update_auto_calibration(engine, 640.0f, 480.0f, depth_z, &focal_length);
+```
+
+### 7. Topology-Guided Dynamic Ambient Occlusion
+```cpp
+float ao[468]; // Array koefisien AO per-vertex wajah
+
+// Menghitung oklusi celah bibir secara dinamis mengikuti blendshape membuka/menutup mulut
+fizgravity_engine_calculate_dynamic_ao(engine, ao, 468);
 ```
 
 ---
 
 ## 🛠️ Cara Membangun Proyek (Build Guide)
 
-### 1. Menjalankan Tes Unit & Integrasi
-Untuk memastikan 18 fungsi matematika manifold, penyelarasan frame, CIELAB, oklusi, dan interpolasi Late Latching berjalan presisi:
+### 1. Menjalankan Tes Unit & FFI
 ```bash
 cargo test
 ```
 
-### 2. Kompilasi Target Lintas Platform
-*   **Untuk Android (ARM64):**
-    Menggunakan `cargo-ndk` untuk menghasilkan pustaka dinamis `.so`:
-    ```bash
-    cargo ndk --target aarch64-linux-android build --release
-    ```
-*   **Untuk iOS (ARM64):**
-    Menambahkan target iOS dan mengompilasi menjadi static library `.a`:
-    ```bash
-    rustup target add aarch64-apple-ios
-    cargo build --target aarch64-apple-ios --release
-    ```
-
----
-
-## 💻 Contoh Integrasi C++
-
-Berikut adalah contoh pemakaian SDK **Fizgravity AR** di dalam proyek C++ Anda menggunakan header [ar_bridge.h](file:///e:/APP_PROJECT/New_AR_Engine/include/ar_bridge.h):
-
-```cpp
-#include "ar_bridge.h"
-#include <iostream>
-
-int main() {
-    // 1. Inisialisasi Fizgravity AR Engine
-    fizgravity::Engine* engine = new fizgravity::Engine();
-    std::cout << "Fizgravity AR Engine Sukses Diinisialisasi!" << std::endl;
-
-    // 2. Loop Render Utama (60 FPS)
-    while (app_is_running) {
-        float timestamp = get_current_time();
-        const void* camera_pixels = get_camera_frame();
-        const void* imu_data = get_imu_sensor_readings();
-        float delta_render_time = get_render_loop_dt(); // misal 0.016 detik
-
-        ar::Pose cameraPose;
-        ar::SphericalHarmonics lighting;
-
-        // Perbarui pelacakan pose & pencahayaan SH (dengan Late Latching dinamis)
-        if (engine->update(timestamp, camera_pixels, imu_data, delta_render_time, cameraPose, lighting)) {
-            // Gunakan cameraPose untuk memperbarui kamera virtual 3D Anda
-            // Gunakan lighting untuk mewarnai material objek virtual Anda
-        }
-
-        // Ambil Face Mesh yang sudah ter-interleaved kontigu VBO (Posisi + UV)
-        ar::FaceMesh faceMesh;
-        if (engine->getFaceMesh(faceMesh)) {
-            // Bind VBO tunggal: stride = sizeof(ar::FaceVertexInterleaved) = 20 bytes
-            // Attrib 0 (Position) pada offset 0 (sizeof(float) * 3 = 12 bytes)
-            // Attrib 1 (UV Tex) pada offset 12 (sizeof(float) * 2 = 8 bytes)
-            glBindBuffer(GL_ARRAY_BUFFER, vbo_id);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(faceMesh.vertices), faceMesh.vertices, GL_DYNAMIC_DRAW);
-            
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 20, (void*)0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 20, (void*)12);
-            
-            glDrawElements(GL_TRIANGLES, indices_count, GL_UNSIGNED_INT, 0);
-        }
-    }
-
-    // 3. Pelepasan Memori aman
-    delete engine;
-    return 0;
-}
+### 2. Kompilasi Target Android (Shared Library)
+Kompilasi pustaka `.so` untuk ARM64 Android menggunakan `cargo-ndk`:
+```bash
+cargo ndk --target aarch64-linux-android build --release
 ```
 
 ---
