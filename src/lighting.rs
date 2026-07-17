@@ -37,26 +37,27 @@ impl LightingEstimator {
         let mut weight_sum = 0.0f32;
 
         // Downsample grid sampling hemisferikal (misal 16x16 titik)
+        // Parameter intrinsik kamera default (diestimasi secara empiris dari resolusi)
+        let fx = (width as f32) * 0.8;
+        let fy = (width as f32) * 0.8;
+        let cx = (width as f32) * 0.5;
+        let cy = (height as f32) * 0.5;
+
         let step_x = (width / 16).max(1);
         let step_y = (height / 16).max(1);
 
         for y_idx in (0..height).step_by(step_y as usize) {
-            // Normalisasi v ke rentang [-1.0, 1.0]
-            let v = -2.0 * (y_idx as f32) / (height as f32) + 1.0;
-            
             for x_idx in (0..width).step_by(step_x as usize) {
-                // Normalisasi u ke rentang [-1.0, 1.0]
-                let u = 2.0 * (x_idx as f32) / (width as f32) - 1.0;
+                // Rekonstruksi arah sinar datang berdasarkan model kamera perspektif
+                let rx = (x_idx as f32 - cx) / fx;
+                let ry = (y_idx as f32 - cy) / fy;
+                let rz = 1.0f32;
                 
-                let r2 = u * u + v * v;
-                if r2 > 1.0 {
-                    continue; // Lewati piksel di luar lingkaran hemisfer unit
-                }
-                
-                // Proyeksi ke arah normal 3D (x, y, z) pada hemisfer
-                let nx = u;
-                let ny = v;
-                let nz = (1.0 - r2).sqrt();
+                // Normalisasikan untuk mendapatkan unit arah normal datangnya cahaya (nx, ny, nz)
+                let norm = (rx * rx + ry * ry + rz * rz).sqrt();
+                let nx = rx / norm;
+                let ny = ry / norm;
+                let nz = rz / norm;
 
                 // Ambil nilai piksel RGB (asumsi format input RGB 24-bit)
                 let pixel_offset = ((y_idx * width + x_idx) * 3) as usize;

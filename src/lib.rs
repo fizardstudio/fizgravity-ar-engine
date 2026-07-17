@@ -252,6 +252,7 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
         let ba = nalgebra::Vector3::new(0.0, 0.0, 0.0);
 
         let (r_pred, p_pred) = engine.extrapolator.extrapolate_pose(
+            0.016, // Horizon prediksi dinamis disuplai di sini
             &current_r,
             &current_p,
             &current_v,

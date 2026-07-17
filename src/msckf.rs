@@ -298,7 +298,7 @@ impl MsckfFilter {
         // S = H_o * P * H_o^T + R_noise
         let p = &self.state.covariance;
         let r_noise = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(Dynamic::new(m - 3), Dynamic::new(m - 3)) * 1e-4;
-        let s = &h_o * p * h_o.transpose() + r_noise;
+        let s = &h_o * p * h_o.transpose() + r_noise.clone();
 
         // K = P * H_o^T * S^-1
         let s_inv = s.try_inverse().unwrap_or_else(|| OMatrix::<f32, Dynamic, Dynamic>::zeros_generic(Dynamic::new(m - 3), Dynamic::new(m - 3)));
@@ -316,9 +316,12 @@ impl MsckfFilter {
         imu.bg += Vector3::new(delta_x[9], delta_x[10], delta_x[11]);
         imu.ba += Vector3::new(delta_x[12], delta_x[13], delta_x[14]);
 
-        // Perbarui Matriks Kovariansi P = (I - K * H_o) * P
+        // Perbarui Matriks Kovariansi menggunakan Joseph Form:
+        // P = (I - K * H_o) * P * (I - K * H_o)^T + K * R_noise * K^T
+        // Joseph Form menjamin kovariansi P selalu simetris dan bernilai positif-semi-definit secara numerik
         let identity = OMatrix::<f32, Dynamic, Dynamic>::identity_generic(Dynamic::new(state_dim), Dynamic::new(state_dim));
-        self.state.covariance = (identity - &k * h_o) * p;
+        let kh_term = identity - &k * h_o;
+        self.state.covariance = &kh_term * p * kh_term.transpose() + &k * r_noise * k.transpose();
     }
 }
 

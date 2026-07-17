@@ -121,7 +121,7 @@ impl TsdfVolume {
 
         // Kita telusuri voxel di sepanjang sinar raycast di dalam wilayah truncation band
         // Truncation band adalah area di sekitar permukaan fisik nyata [pt_global - t, pt_global + t]
-        let start_dist = ray_length - self.truncation_dist;
+        let start_dist = (ray_length - self.truncation_dist).max(0.0);
         let end_dist = ray_length + self.truncation_dist;
 
         let step_size = self.voxel_size * 0.5; // Step penelusuran setengah ukuran voxel

@@ -14,9 +14,10 @@ impl MotionExtrapolator {
         Self { prediction_horizon: horizon_seconds }
     }
 
-    /// Memprediksi pose kamera masa depan berdasarkan data inersia instan dari IMU.
+    /// Memprediksi pose kamera masa depan berdasarkan data inersia instan dari IMU dan horizon delta waktu dinamis.
     pub fn extrapolate_pose(
         &self,
+        dt: f32, // Horizon prediksi dinamis disuplai oleh render loop
         current_r: &Rotation3<f32>,
         current_p: &Vector3<f32>,
         current_v: &Vector3<f32>,
@@ -25,7 +26,6 @@ impl MotionExtrapolator {
         bg: &Vector3<f32>,
         ba: &Vector3<f32>,
     ) -> (Rotation3<f32>, Vector3<f32>) {
-        let dt = self.prediction_horizon;
         let gravity = Vector3::new(0.0, 0.0, -9.81);
 
         // Koreksi bias IMU instan
@@ -61,7 +61,7 @@ mod tests {
         let bg = Vector3::new(0.0, 0.0, 0.0);
         let ba = Vector3::new(0.0, 0.0, 0.0);
         
-        let (r_pred, p_pred) = extrapolator.extrapolate_pose(&r, &p, &v, &gyro, &acc, &bg, &ba);
+        let (r_pred, p_pred) = extrapolator.extrapolate_pose(0.016, &r, &p, &v, &gyro, &acc, &bg, &ba);
         
         // Karena sistem setimbang dinamis (acc_global + gravity = 0), posisi dan rotasi prediksi harus tetap diam
         assert!((r_pred.matrix()[(0,0)] - 1.0).abs() < 1e-5);
