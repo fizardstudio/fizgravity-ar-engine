@@ -314,6 +314,25 @@ pub unsafe extern "C" fn fizgravity_engine_get_face_mesh(
     }
 }
 
+/// Mengekstrak jaring leher virtual hasil ekstrapolasi.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_get_neck_mesh(
+    engine_ptr: *mut c_void,
+    out_neck: *mut face::ArNeckMesh,
+) -> c_int {
+    if engine_ptr.is_null() || out_neck.is_null() {
+        return -1;
+    }
+    let engine = &*(engine_ptr as *mut FizgravityEngine);
+    
+    if let Ok(mesh) = engine.face_mesh_shared.read() {
+        *out_neck = face::ArNeckExtender::extrapolate_neck(&mesh.vertices);
+        0
+    } else {
+        -2
+    }
+}
+
 /// Mengekstrak sendi koordinat tangan 3D yang dilacak.
 #[no_mangle]
 pub unsafe extern "C" fn fizgravity_engine_get_hand_joints(
@@ -513,6 +532,31 @@ mod tests {
         }
 
         // Release engine
+        unsafe { fizgravity_engine_release(engine_ptr) };
+    }
+
+    #[test]
+    fn test_get_neck_mesh() {
+        let engine_ptr = unsafe { fizgravity_engine_init() };
+        assert!(!engine_ptr.is_null());
+
+        let mut neck_mesh = face::ArNeckMesh {
+            vertices: [ArFaceVertexInterleaved {
+                position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+                uv: ArTexCoord2D { u: 0.0, v: 0.0 },
+            }; 34],
+            indices: [0; 96],
+        };
+
+        let res = unsafe { fizgravity_engine_get_neck_mesh(engine_ptr, &mut neck_mesh) };
+        assert_eq!(res, 0);
+
+        // Verifikasi indices terisi dengan benar (tidak bernilai 0 semua)
+        assert_eq!(neck_mesh.indices[0], 0);
+        assert_eq!(neck_mesh.indices[1], 1);
+        assert_eq!(neck_mesh.indices[2], 17);
+        assert_eq!(neck_mesh.indices[3], 17);
+
         unsafe { fizgravity_engine_release(engine_ptr) };
     }
 }

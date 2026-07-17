@@ -184,3 +184,92 @@ impl FaceTracker {
         0 // Sukses
     }
 }
+
+/// Indeks batas rahang bawah MediaPipe untuk ekstrapolasi leher virtual
+pub const JAWLINE_INDICES: [usize; 17] = [361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132];
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArNeckMesh {
+    pub vertices: [ArFaceVertexInterleaved; 34], // 17 points * 2 rows
+    pub indices: [u32; 96], // 16 segments * 2 triangles * 3 indices
+}
+
+pub struct ArNeckExtender;
+
+impl ArNeckExtender {
+    pub fn extrapolate_neck(face_vertices: &[ArFaceVertexInterleaved; FACE_MESH_VERTICES_COUNT]) -> ArNeckMesh {
+        let v_forehead = face_vertices[10].position;
+        let v_chin = face_vertices[152].position;
+        
+        let dx = v_chin.x - v_forehead.x;
+        let dy = v_chin.y - v_forehead.y;
+        let dz = v_chin.z - v_forehead.z;
+        let len = (dx*dx + dy*dy + dz*dz).sqrt();
+        
+        let u_down = if len > 1e-5 {
+            ArVertex3D { x: dx / len, y: dy / len, z: dz / len }
+        } else {
+            ArVertex3D { x: 0.0, y: -1.0, z: 0.0 }
+        };
+        
+        let mut neck_vertices = [ArFaceVertexInterleaved {
+            position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+            uv: ArTexCoord2D { u: 0.0, v: 0.0 },
+        }; 34];
+        
+        let l1 = 0.05; // Row 1 distance
+        let l2 = 0.10; // Row 2 distance
+        
+        for idx in 0..17 {
+            let jaw_idx = JAWLINE_INDICES[idx];
+            let v_jaw = face_vertices[jaw_idx];
+            
+            // Row 1
+            neck_vertices[idx] = ArFaceVertexInterleaved {
+                position: ArVertex3D {
+                    x: v_jaw.position.x + l1 * u_down.x,
+                    y: v_jaw.position.y + l1 * u_down.y,
+                    z: v_jaw.position.z + l1 * u_down.z,
+                },
+                uv: ArTexCoord2D {
+                    u: v_jaw.uv.u,
+                    v: v_jaw.uv.v + 0.1,
+                },
+            };
+            
+            // Row 2
+            neck_vertices[idx + 17] = ArFaceVertexInterleaved {
+                position: ArVertex3D {
+                    x: v_jaw.position.x + l2 * u_down.x,
+                    y: v_jaw.position.y + l2 * u_down.y,
+                    z: v_jaw.position.z + l2 * u_down.z,
+                },
+                uv: ArTexCoord2D {
+                    u: v_jaw.uv.u,
+                    v: v_jaw.uv.v + 0.2,
+                },
+            };
+        }
+        
+        let mut indices = [0u32; 96];
+        let mut ptr = 0;
+        
+        for i in 0..16 {
+            indices[ptr] = i as u32;
+            indices[ptr + 1] = (i + 1) as u32;
+            indices[ptr + 2] = (i + 17) as u32;
+            
+            indices[ptr + 3] = (i + 17) as u32;
+            indices[ptr + 4] = (i + 1) as u32;
+            indices[ptr + 5] = (i + 18) as u32;
+            
+            ptr += 6;
+        }
+        
+        ArNeckMesh {
+            vertices: neck_vertices,
+            indices,
+        }
+    }
+}
