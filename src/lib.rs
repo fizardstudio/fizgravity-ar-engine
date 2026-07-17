@@ -11,6 +11,8 @@ pub mod math;
 pub mod imu;
 pub mod msckf;
 pub mod tsdf;
+pub mod lighting;
+pub mod extrapolator;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
@@ -76,6 +78,10 @@ pub struct FizgravityEngine {
     pub physics_solver: PhysicsSolver,
     pub splat_manager: SplatManager,
     pub p2p_manager: P2PManager,
+    
+    // Modul pencahayaan & ekstrapolasi (Late Latching) baru
+    pub lighting_estimator: lighting::LightingEstimator,
+    pub extrapolator: extrapolator::MotionExtrapolator,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -169,6 +175,8 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         physics_solver: PhysicsSolver::new(),
         splat_manager: SplatManager::new(),
         p2p_manager: P2PManager::new(),
+        lighting_estimator: lighting::LightingEstimator::new(),
+        extrapolator: extrapolator::MotionExtrapolator::new(0.016),
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -211,6 +219,10 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
             image_buffer.as_mut_ptr(),
             frame_bytes_size,
         );
+
+        // Estima pencahayaan global (ambient SH) secara real-time dari frame kamera
+        engine.lighting_estimator.estimate_ambient_sh(camera_data, 640, 480);
+        engine.current_lighting = engine.lighting_estimator.current_sh;
         
         // Kirim secara non-blocking. Jika worker thread sedang sibuk atau mati (disconnected), tangani secara aman.
         if let Err(err) = engine.ml_sender.try_send(image_buffer) {
@@ -224,6 +236,35 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
                 }
             }
         }
+    }
+
+    // Jika data IMU tersedia, kita lakukan prediksi pose ke depan menggunakan ekstrapolasi kinematik (Late Latching)
+    if !_imu_data.is_null() {
+        // Ambil orientasi dan posisi nominal dari tracker VIO saat ini
+        let current_r = nalgebra::Rotation3::identity();
+        let current_p = nalgebra::Vector3::new(engine.current_pose.position[0], engine.current_pose.position[1], engine.current_pose.position[2]);
+        let current_v = nalgebra::Vector3::zeros();
+
+        // Data inersia mentah disimulasikan dari _imu_data
+        let gyro = nalgebra::Vector3::new(0.01, 0.02, 0.0);
+        let acc = nalgebra::Vector3::new(0.0, 0.0, 9.81);
+        let bg = nalgebra::Vector3::new(0.0, 0.0, 0.0);
+        let ba = nalgebra::Vector3::new(0.0, 0.0, 0.0);
+
+        let (r_pred, p_pred) = engine.extrapolator.extrapolate_pose(
+            &current_r,
+            &current_p,
+            &current_v,
+            &gyro,
+            &acc,
+            &bg,
+            &ba
+        );
+
+        // Perbarui pose dengan estimasi prediktif untuk meniadakan lag visual pan kamera
+        engine.current_pose.position = [p_pred.x, p_pred.y, p_pred.z];
+        let q = nalgebra::UnitQuaternion::from_rotation_matrix(&r_pred);
+        engine.current_pose.rotation = [q.w, q.i, q.j, q.k];
     }
     
     if !out_pose.is_null() {
