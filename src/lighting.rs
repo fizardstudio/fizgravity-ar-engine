@@ -98,6 +98,30 @@ impl LightingEstimator {
             }
         }
     }
+
+    /// Menghitung suhu warna sekitar (T_ambient dalam Kelvin) dan intensitasnya (I_ambient)
+    /// berdasarkan koefisien Spherical Harmonics saat ini menggunakan formula McCamy.
+    pub fn estimate_temperature_and_intensity(&self) -> (f32, f32) {
+        let r_amb = self.current_sh.coefficients_r[0];
+        let g_amb = self.current_sh.coefficients_g[0];
+        let b_amb = self.current_sh.coefficients_b[0];
+
+        let sum = r_amb + g_amb + b_amb;
+        if sum < 1e-4 {
+            return (6500.0, 0.0); // Default D65
+        }
+
+        let intensity = (0.299 * r_amb + 0.587 * g_amb + 0.114 * b_amb).clamp(0.0, 1.0);
+
+        let x = r_amb / sum;
+        let y = g_amb / sum;
+
+        let n = (x - 0.3320) / (0.1858 - y);
+        let temp = 449.0 * n.powi(3) + 3525.0 * n.powi(2) + 6823.3 * n + 5520.33;
+        let temp = temp.clamp(2000.0, 10000.0);
+
+        (temp, intensity)
+    }
 }
 
 #[cfg(test)]
@@ -115,5 +139,17 @@ mod tests {
         assert!(estimator.current_sh.coefficients_r[0] > 0.0);
         assert!(estimator.current_sh.coefficients_g[0] > 0.0);
         assert!(estimator.current_sh.coefficients_b[0] > 0.0);
+    }
+
+    #[test]
+    fn test_cct_and_intensity_estimation() {
+        let mut estimator = LightingEstimator::new();
+        estimator.current_sh.coefficients_r[0] = 0.282;
+        estimator.current_sh.coefficients_g[0] = 0.282;
+        estimator.current_sh.coefficients_b[0] = 0.282;
+
+        let (temp, intensity) = estimator.estimate_temperature_and_intensity();
+        assert!((temp - 6000.0).abs() < 1000.0);
+        assert!((intensity - 0.282).abs() < 1e-4);
     }
 }

@@ -20,6 +20,7 @@ pub mod pbr_makeup;
 pub mod eye_contacts;
 pub mod stabilizer;
 pub mod makeup_triangulator;
+pub mod texture_analyzer;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
@@ -92,6 +93,9 @@ pub struct FizgravityEngine {
     
     // Stabilizer adaptif untuk meniadakan jitter wajah
     pub face_stabilizer: Arc<RwLock<stabilizer::ArFaceMeshStabilizer>>,
+    
+    // Fase akumulasi rotasi giroskop untuk shimmer gliter fisika
+    pub glitter_phase: RwLock<(f32, f32)>,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -192,6 +196,7 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         lighting_estimator: lighting::LightingEstimator::new(),
         extrapolator: extrapolator::MotionExtrapolator::new(0.016),
         face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(1.5, 0.15))),
+        glitter_phase: RwLock::new((0.0, 0.0)),
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -629,5 +634,168 @@ mod makeup_tests {
         let mut lower_indices = [0u32; 60];
         let count2 = unsafe { fizgravity_engine_get_lower_lip_indices(lower_indices.as_mut_ptr(), 60) };
         assert_eq!(count2, 60);
+    }
+}
+
+use std::os::raw::c_uchar;
+
+/// Mengambil estimasi suhu warna (Kelvin) dan intensitas cahaya sekitar menggunakan formula McCamy.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_get_ambient_cct_and_intensity(
+    engine_ptr: *mut c_void,
+    out_temp: *mut f32,
+    out_intensity: *mut f32,
+) -> c_int {
+    if engine_ptr.is_null() || out_temp.is_null() || out_intensity.is_null() {
+        return -1;
+    }
+    let engine = &*(engine_ptr as *const FizgravityEngine);
+    let (temp, intensity) = engine.lighting_estimator.estimate_temperature_and_intensity();
+    *out_temp = temp;
+    *out_intensity = intensity;
+    0
+}
+
+/// Menghitung pergeseran koordinat specular gliter secara dinamis berdasarkan data sensor giroskop.
+/// Menggunakan leaky integrator untuk meluruhkan offset drift rotasi secara berkala.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_calculate_glitter_shimmer_shift(
+    engine_ptr: *mut c_void,
+    gyro_x: f32,
+    gyro_y: f32,
+    gyro_z: f32,
+    dt: f32,
+    out_shift_x: *mut f32,
+    out_shift_y: *mut f32,
+) -> c_int {
+    if engine_ptr.is_null() || out_shift_x.is_null() || out_shift_y.is_null() {
+        return -1;
+    }
+    let engine = &*(engine_ptr as *const FizgravityEngine);
+    if let Ok(mut phase) = engine.glitter_phase.write() {
+        let decay = 0.96;
+        phase.0 = (phase.0 + gyro_x * dt) * decay;
+        phase.1 = (phase.1 + gyro_y * dt) * decay;
+
+        let sensitivity = 0.15;
+        *out_shift_x = phase.1 * sensitivity;
+        *out_shift_y = phase.0 * sensitivity;
+        0
+    } else {
+        -2
+    }
+}
+
+/// Menghitung pemulusan batas hairline pada dahi secara dinamis untuk foundation wajah.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_calculate_hairline_blending(
+    engine_ptr: *mut c_void,
+    out_alphas: *mut f32,
+    max_count: c_int,
+) -> c_int {
+    if engine_ptr.is_null() || out_alphas.is_null() {
+        return -1;
+    }
+    let engine = &*(engine_ptr as *const FizgravityEngine);
+    if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
+        let count = std::cmp::min(max_count as usize, face::FACE_MESH_VERTICES_COUNT);
+        let alphas_slice = std::slice::from_raw_parts_mut(out_alphas, count);
+        
+        for alpha in alphas_slice.iter_mut() {
+            *alpha = 1.0;
+        }
+
+        let mut alphas_temp = [1.0f32; face::FACE_MESH_VERTICES_COUNT];
+        makeup_triangulator::MakeupTriangulator::calculate_hairline_blending(&shared_mesh.vertices, &mut alphas_temp);
+
+        for i in 0..count {
+            alphas_slice[i] = alphas_temp[i];
+        }
+        0
+    } else {
+        -2
+    }
+}
+
+/// Menganalisis kondisi tekstur kulit, kerutan dahi, dan noda jerawat dari buffer gambar RGB kamera.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_analyze_skin_health(
+    image_rgb_ptr: *const c_uchar,
+    width: c_int,
+    height: c_int,
+    out_roughness: *mut f32,
+    out_wrinkles: *mut f32,
+) -> c_int {
+    if image_rgb_ptr.is_null() || out_roughness.is_null() || out_wrinkles.is_null() || width <= 100 || height <= 100 {
+        return -1;
+    }
+    let img_size = (width * height * 3) as usize;
+    let image_slice = std::slice::from_raw_parts(image_rgb_ptr, img_size);
+
+    let forehead_w = (width / 3) as usize;
+    let forehead_h = (height / 6) as usize;
+    let forehead_x = (width / 3) as usize;
+    let forehead_y = (height / 8) as usize;
+
+    let cheek_w = (width / 5) as usize;
+    let cheek_h = (height / 5) as usize;
+    let cheek_x = (width / 4) as usize;
+    let cheek_y = (height / 2) as usize;
+
+    let (roughness, _) = texture_analyzer::SkinTextureAnalyzer::analyze_roi(
+        image_slice,
+        width as usize,
+        height as usize,
+        cheek_x,
+        cheek_y,
+        cheek_w,
+        cheek_h,
+    );
+
+    let wrinkles = texture_analyzer::SkinTextureAnalyzer::analyze_wrinkles(
+        image_slice,
+        width as usize,
+        height as usize,
+        forehead_x,
+        forehead_y,
+        forehead_w,
+        forehead_h,
+    );
+
+    *out_roughness = roughness;
+    *out_wrinkles = wrinkles;
+    0
+}
+
+#[cfg(test)]
+mod priority_ffi_tests {
+    use super::*;
+
+    #[test]
+    fn test_ffi_glitter_shift() {
+        let engine_ptr = unsafe { fizgravity_engine_init() };
+        assert!(!engine_ptr.is_null());
+
+        let mut sx = 0.0f32;
+        let mut sy = 0.0f32;
+        let res = unsafe {
+            fizgravity_engine_calculate_glitter_shimmer_shift(engine_ptr, 1.0, 2.0, 0.0, 0.016, &mut sx, &mut sy)
+        };
+        assert_eq!(res, 0);
+        assert!(sx.abs() > 0.0);
+        assert!(sy.abs() > 0.0);
+
+        unsafe { fizgravity_engine_release(engine_ptr) };
+    }
+
+    #[test]
+    fn test_ffi_skin_health() {
+        let rgb_data = vec![128u8; 320 * 240 * 3];
+        let mut roughness = 0.0f32;
+        let mut wrinkles = 0.0f32;
+        let res = unsafe {
+            fizgravity_engine_analyze_skin_health(rgb_data.as_ptr(), 320, 240, &mut roughness, &mut wrinkles)
+        };
+        assert_eq!(res, 0);
     }
 }

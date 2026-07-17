@@ -44,12 +44,12 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Dampak**: Membuat foundation, highlighter, dan lipstik terlihat ultra-realistis dengan memantulkan cahaya ruangan asli (kilau bergerak secara dinamis mengikuti arah lampu saat kepala menoleh).
   * **Solusi**: Fragment shader berbasis *Physically Based Rendering* (PBR) di native C++ GLES3 (GGX specular model untuk kilau basah, parametrisasi roughness/metallicness).
 
-- [ ] **7. Skin Normal Map Shader (Preservasi Pori & Tekstur Kulit)**
+- [x] **7. Skin Normal Map Shader (Preservasi Pori & Tekstur Kulit)**
   * **Prioritas**: **[PRIORITAS UTAMA - DIBUTUHKAN LANGSUNG UNTUK GLOWMATCH]**
   * **Dampak**: Mencegah efek "wajah topeng plastik" saat pengguna menggunakan foundation tebal. Wajah tetap terlihat sebagai kulit manusia asli yang halus, sehat, dan berpori alami.
-  * **Solusi**: Normal mapping ringan untuk mempertahankan pori-pori halus dan struktur kulit asli di bawah lapisan foundation virtual.
+  * **Solusi**: Detail-Preservation High-Pass Blending shader di mana pori-pori dan tekstur halus asli dipadukan kembali di atas lapisan foundation virtual.
 
-- [ ] **8. Analisis Tekstur & Kesehatan Kulit LBP (`src/texture_analyzer.rs`)**
+- [x] **8. Analisis Tekstur & Kesehatan Kulit LBP (`src/texture_analyzer.rs`)**
   * **Prioritas**: **[PRIORITAS UTAMA - SCANNER & PRODUCT RECOMMENDATION]**
   * **Dampak**: Menjadi otak dari fitur analisis kesehatan kulit GlowMatch (mendeteksi kerutan, noda jerawat, kehalusan kulit) untuk memberikan rekomendasi produk makeup/skincare.
   * **Solusi**: Algoritma penganalisis tekstur kulit menggunakan filter *Local Binary Patterns* (LBP) dan operator Sobel.
@@ -59,12 +59,12 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Dampak**: Memberikan efek kedalaman 3D pada kontur wajah (cuping hidung, bawah bibir, kelopak mata) sehingga riasan tidak terlihat flat.
   * **Solusi**: Simulasi bayangan gelap pada area lipatan wajah agar objek virtual tidak terlihat seperti tempelan stiker datar.
 
-- [ ] **10. Penyelarasan Cahaya Lingkungan Dinamis (Ambient Relighting Engine)**
+- [x] **10. Penyelarasan Cahaya Lingkungan Dinamis (Ambient Relighting Engine)**
   * **Prioritas**: **[PRIORITAS UTAMA - DIBUTUHKAN LANGSUNG UNTUK GLOWMATCH]**
   * **Dampak**: Mengantisipasi warna lampu ruangan pengguna (hangat/dingin) agar warna lipstik dan foundation otomatis menyesuaikan secara organik, tidak terlihat menyala terang sendirian di ruangan redup.
-  * **Solusi**: Analisis histogram citra background secara real-time untuk memperkirakan nilai suhu warna ($T_{ambient}$) dan intensitasnya ($I_{ambient}$).
+  * **Solusi**: Analisis estimasi suhu warna (Kelvin) menggunakan formula McCamy dan intensitas cahaya sekitar dari koefisien Spherical Harmonics.
 
-- [ ] **11. Kilau Shimmer Fisik Berbasis Giroskop (IMU Specular Shimmer)**
+- [x] **11. Kilau Shimmer Fisik Berbasis Giroskop (IMU Specular Shimmer)**
   * **Prioritas**: **[PRIORITAS UTAMA - GLOWMATCH SHIMMER]**
   * **Dampak**: Efek highlighter/gliter kelap-kelip berkilau dinamis di tulang pipi dan kelopak mata yang bergerak responsif mengikuti arah orientasi kemiringan kepala pengguna nyata.
   * **Solusi**: Menggeser koordinat tekstur gliter (*specular noise map*) di fragment shader berdasarkan arah rotasi roll, pitch, dan yaw dari sensor giroskop (IMU) menggunakan noise Voronoi.
@@ -75,7 +75,7 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
   * **Solusi**: Segmentasi area kulit dahi/pipi, konversi warna piksel ke ruang warna CIE L\*a\*b\*, dan kalkulasi rumus *Individual Typology Angle* (ITA°):
     $$\text{ITA}^\circ = \arctan\left(\frac{L^* - 50}{b^*}\right) \times \frac{180}{\pi}$$
 
-- [ ] **13. Masking Batas Halus Tepi Rambut (Hairline Soft-Blending Mask)**
+- [x] **13. Masking Batas Halus Tepi Rambut (Hairline Soft-Blending Mask)**
   * **Prioritas**: **[PRIORITAS UTAMA - DIBUTUHKAN LANGSUNG UNTUK GLOWMATCH]**
   * **Dampak**: Menghilangkan batas pemotongan kasar foundation di area dahi dekat garis rambut (menyatu secara organik dengan folikel rambut asli).
   * **Solusi**: Penggunaan *Alpha Distance Field* (ADF) dan noise Perlin di shader untuk membuat gradasi transparansi non-linear yang memudar halus saat mendekati garis hairline.
