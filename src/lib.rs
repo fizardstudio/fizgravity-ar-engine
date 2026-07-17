@@ -433,6 +433,41 @@ pub unsafe extern "C" fn fizgravity_engine_p2p_sync_voxels(
     engine.p2p_manager.send_voxel_delta(keys, count)
 }
 
+/// Mengimpor koordinat wajah nyata hasil deteksi Google ML Kit (Kotlin/Swift) ke dalam shared state Rust.
+/// Ini memungkinkan Late Latching dan diagnostik AI berjalan menggunakan tracking hardware-accelerated.
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
+    engine_ptr: *mut c_void,
+    vertices_ptr: *const ArVertex3D,
+    blendshapes_ptr: *const c_float,
+) -> c_int {
+    if engine_ptr.is_null() || vertices_ptr.is_null() || blendshapes_ptr.is_null() {
+        return -1;
+    }
+    let engine = &mut *(engine_ptr as *mut FizgravityEngine);
+
+    if let Ok(mut shared_mesh) = engine.face_mesh_shared.write() {
+        let vertices_slice = std::slice::from_raw_parts(vertices_ptr, face::FACE_MESH_VERTICES_COUNT);
+        for i in 0..face::FACE_MESH_VERTICES_COUNT {
+            shared_mesh.vertices[i].position = vertices_slice[i];
+            
+            // Map static UV coordinates based on polar angles
+            let angle = (i as f32) * std::f32::consts::PI / 234.0;
+            shared_mesh.vertices[i].uv = face::ArTexCoord2D {
+                u: (angle.cos() + 1.0) * 0.5,
+                v: (angle.sin() + 1.0) * 0.5,
+            };
+        }
+
+        let blendshapes_slice = std::slice::from_raw_parts(blendshapes_ptr, face::FACE_BLENDSHAPES_COUNT);
+        shared_mesh.blendshapes.copy_from_slice(blendshapes_slice);
+        
+        0 // Sukses
+    } else {
+        -2 // Gagal write lock
+    }
+}
+
 /// Melepaskan alokasi memori internal Fizgravity AR Engine.
 /// Harus dipanggil saat aplikasi AR ditutup untuk mencegah kebocoran memori (memory leaks).
 #[no_mangle]
@@ -440,5 +475,44 @@ pub unsafe extern "C" fn fizgravity_engine_release(engine_ptr: *mut c_void) {
     if !engine_ptr.is_null() {
         // Ambil kembali kepemilikan box untuk deallokasi otomatis oleh Rust
         let _ = Box::from_raw(engine_ptr as *mut FizgravityEngine);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_face_mesh_bypass() {
+        // Inisialisasi engine
+        let engine_ptr = unsafe { fizgravity_engine_init() };
+        assert!(!engine_ptr.is_null());
+
+        let test_vertices = [ArVertex3D { x: 1.0, y: 2.0, z: 3.0 }; face::FACE_MESH_VERTICES_COUNT];
+        let test_blendshapes = [0.5; face::FACE_BLENDSHAPES_COUNT];
+
+        // Set face mesh via FFI
+        let res = unsafe {
+            fizgravity_engine_set_face_mesh(
+                engine_ptr,
+                test_vertices.as_ptr(),
+                test_blendshapes.as_ptr(),
+            )
+        };
+        assert_eq!(res, 0);
+
+        // Verifikasi shared state terupdate
+        let engine = unsafe { &*(engine_ptr as *const FizgravityEngine) };
+        if let Ok(mesh) = engine.face_mesh_shared.read() {
+            assert_eq!(mesh.vertices[0].position.x, 1.0);
+            assert_eq!(mesh.vertices[0].position.y, 2.0);
+            assert_eq!(mesh.vertices[0].position.z, 3.0);
+            assert_eq!(mesh.blendshapes[0], 0.5);
+        } else {
+            panic!("Gagal mengunci read lock");
+        }
+
+        // Release engine
+        unsafe { fizgravity_engine_release(engine_ptr) };
     }
 }
