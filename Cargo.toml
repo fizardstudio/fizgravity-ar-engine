@@ -1,0 +1,21 @@
+[package]
+name = "fizgravity-ar-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Antigravity Developer <firma@glowmatch.com>"]
+description = "Fizgravity AR Engine for augmented reality tracking, mapping, and lighting estimation in Rust."
+
+[lib]
+name = "fizgravity_ar"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+# For vector, matrix, and quaternion algebra
+nalgebra = { version = "0.32", features = ["serde-serialize"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

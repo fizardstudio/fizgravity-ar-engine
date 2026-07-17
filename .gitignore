@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target/
+
+# Local configuration files
+.gemini/
+.idea/
+.vscode/
+
+# Local build logs and text files
+build_error.txt
+build_error2.txt
+build_error_check.txt
+*.log
+
+# Backup files
+*.rs.bk
+*.bak
