@@ -15,7 +15,7 @@ pub mod tsdf;
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
 use std::sync::{Arc, RwLock};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{SyncSender, Receiver, sync_channel};
 
 use face::{ArFaceMesh, FaceTracker};
 use hand::{ArHandJoints, HandTracker};
@@ -66,9 +66,11 @@ pub struct FizgravityEngine {
     pub face_mesh_shared: Arc<RwLock<ArFaceMesh>>,
     pub hand_joints_shared: Arc<RwLock<(ArHandJoints, ArHandJoints, bool, bool)>>, // left, right, left_detected, right_detected
 
-    // Saluran komunikasi untuk mengirim frame gambar kamera ke background worker thread
-    pub face_sender: Sender<Vec<u8>>,
-    pub hand_sender: Sender<Vec<u8>>,
+    // Saluran komunikasi untuk mengirim frame gambar kamera ke background worker thread (Bounded Queue)
+    pub ml_sender: SyncSender<Vec<u8>>,
+    // Saluran daur ulang buffer (Buffer Recycler) untuk menghindari memory churn heap allocation
+    pub recycle_receiver: Receiver<Vec<u8>>,
+    pub recycle_sender: SyncSender<Vec<u8>>,
 
     // Solver Fisika & Pengelola Rekonstruksi 3DGS
     pub physics_solver: PhysicsSolver,
@@ -80,8 +82,16 @@ pub struct FizgravityEngine {
 /// Mengembalikan pointer mentah ke struktur mesin internal.
 #[no_mangle]
 pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
-    let (face_sender, face_receiver) = channel::<Vec<u8>>();
-    let (hand_sender, hand_receiver) = channel::<Vec<u8>>();
+    // Bounded queue sebesar 1 frame saja untuk mencegah akumulasi lag frame usang
+    let (ml_sender, ml_receiver) = sync_channel::<Vec<u8>>(1);
+    // Bounded queue daur ulang buffer sebesar 3 frame (Triple Buffering)
+    let (recycle_sender, recycle_receiver) = sync_channel::<Vec<u8>>(3);
+
+    // Alokasikan 3 buffer berukuran 640x480 RGB di awal (Zero-Allocation Pipeline)
+    let frame_bytes_size = 640 * 480 * 3;
+    for _ in 0..3 {
+        let _ = recycle_sender.send(vec![0u8; frame_bytes_size]);
+    }
 
     let face_mesh_shared = Arc::new(RwLock::new(ArFaceMesh {
         vertices: [ArVertex3D { x: 0.0, y: 0.0, z: 0.0 }; face::FACE_MESH_VERTICES_COUNT],
@@ -103,34 +113,40 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         false, // right_detected
     )));
 
-    // 1. Spawn Thread Pekerja Wajah (Face Tracker Worker Thread)
+    // Spawn Thread Pekerja Kombinasi ML (Combined ML Tracker Worker Thread)
+    // Penggabungan ini mereduksi frekuensi penyalinan memori data kamera dari 2 kali menjadi 1 kali copy
     let face_mesh_clone = face_mesh_shared.clone();
-    std::thread::spawn(move || {
-        let mut tracker = FaceTracker::new();
-        while let Ok(image_buffer) = face_receiver.recv() {
-            // Jalankan inferensi ONNX Wajah di background thread (non-blocking)
-            let _ = tracker.update(image_buffer.as_ptr() as *const c_void);
-            if let Ok(mut mesh) = face_mesh_clone.write() {
-                *mesh = tracker.current_mesh;
-            }
-        }
-    });
-
-    // 2. Spawn Thread Pekerja Tangan (Hand Tracker Worker Thread)
     let hand_joints_clone = hand_joints_shared.clone();
+    let recycle_clone = recycle_sender.clone();
+    
     std::thread::spawn(move || {
-        let mut tracker = HandTracker::new();
-        while let Ok(image_buffer) = hand_receiver.recv() {
-            // Jalankan inferensi ONNX Tangan di background thread (non-blocking)
-            let _ = tracker.update(image_buffer.as_ptr() as *const c_void);
+        let mut face_tracker = FaceTracker::new();
+        let mut hand_tracker = HandTracker::new();
+        
+        while let Ok(image_buffer) = ml_receiver.recv() {
+            let ptr = image_buffer.as_ptr() as *const c_void;
+            
+            // Jalankan kedua model inferensi secara berurutan di background thread
+            let _ = face_tracker.update(ptr);
+            let _ = hand_tracker.update(ptr);
+
+            // Update jaring wajah
+            if let Ok(mut mesh) = face_mesh_clone.write() {
+                *mesh = face_tracker.current_mesh;
+            }
+
+            // Update sendi tangan
             if let Ok(mut joints) = hand_joints_clone.write() {
                 *joints = (
-                    tracker.left_hand,
-                    tracker.right_hand,
-                    tracker.left_hand_detected,
-                    tracker.right_hand_detected,
+                    hand_tracker.left_hand,
+                    hand_tracker.right_hand,
+                    hand_tracker.left_hand_detected,
+                    hand_tracker.right_hand_detected,
                 );
             }
+
+            // Daur ulang buffer kosong ke antrean agar bisa digunakan kembali oleh thread utama
+            let _ = recycle_clone.send(image_buffer);
         }
     });
 
@@ -147,8 +163,9 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         },
         face_mesh_shared,
         hand_joints_shared,
-        face_sender,
-        hand_sender,
+        ml_sender,
+        recycle_receiver,
+        recycle_sender,
         physics_solver: PhysicsSolver::new(),
         splat_manager: SplatManager::new(),
         p2p_manager: P2PManager::new(),
@@ -178,16 +195,27 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
     engine.is_initialized = true;
     engine.current_pose.position[0] += 0.001; // Simulasi gerakan linier lambat
     
-    // Perbarui Wajah & Tangan (ML pipelines) secara asinkron jika camera_data valid
+    // Perbarui Wajah & Tangan secara asinkron jika camera_data valid
     if !camera_data.is_null() {
-        // Contoh ukuran buffer gambar 640x480 RGB = 921,600 bytes
-        let size = 640 * 480 * 3;
-        let img_slice = std::slice::from_raw_parts(camera_data as *const u8, size);
-        let image_buffer = img_slice.to_vec(); // Copy data ke heap agar thread-safe
+        let frame_bytes_size = 640 * 480 * 3;
         
-        // Kirim ke background thread tanpa memblokir thread rendering utama (non-blocking send)
-        let _ = engine.face_sender.send(image_buffer.clone());
-        let _ = engine.hand_sender.send(image_buffer);
+        // Ambil buffer daur ulang dari recycler. Jika kosong (jarang terjadi), alokasikan buffer baru.
+        let mut image_buffer = match engine.recycle_receiver.try_recv() {
+            Ok(buf) => buf,
+            Err(_) => vec![0u8; frame_bytes_size],
+        };
+
+        // Salin piksel kamera secara langsung tanpa alokasi heap baru (Zero Memory Allocation)
+        std::ptr::copy_nonoverlapping(
+            camera_data as *const u8,
+            image_buffer.as_mut_ptr(),
+            frame_bytes_size,
+        );
+        
+        // Kirim secara non-blocking. Jika worker thread sedang sibuk, segera kembalikan buffer ke recycler.
+        if let Err(std::sync::mpsc::TrySendError::Full(buf)) = engine.ml_sender.try_send(image_buffer) {
+            let _ = engine.recycle_sender.send(buf);
+        }
     }
     
     if !out_pose.is_null() {
