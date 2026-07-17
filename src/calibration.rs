@@ -42,21 +42,39 @@ impl CameraAutoCalibrator {
         // Ambil jarak piksel horizontal antara pelipis kiri (index 127) dan kanan (index 356)
         let p_left = face_vertices[127].position;
         let p_right = face_vertices[356].position;
+        
+        // Ambil tinggi dahi-dagu (index 10 ke 152) untuk koreksi penolehan (yaw)
+        let p_top = face_vertices[10].position;
+        let p_bottom = face_vertices[152].position;
 
-        // Proyeksikan jarak 2D di layar
+        // Proyeksikan lebar pelipis terukur
         let dx = p_left.x - p_right.x;
         let dy = p_left.y - p_right.y;
-        let d_pixels = (dx*dx + dy*dy).sqrt();
+        let w_measured = (dx*dx + dy*dy).sqrt();
 
-        if d_pixels < 10.0 {
-            return; // Wajah terlalu kecil/invalid
+        // Proyeksikan tinggi vertikal terukur
+        let dx_v = p_top.x - p_bottom.x;
+        let dy_v = p_top.y - p_bottom.y;
+        let h_measured = (dx_v*dx_v + dy_v*dy_v).sqrt();
+
+        if w_measured < 10.0 || h_measured < 10.0 {
+            return;
         }
+
+        // Rasio aspek dahi-pelipis fisik rata-rata (W_phys / H_phys = 13.5cm / 19.0cm = 0.71)
+        let base_ratio = 0.71f32;
+
+        // Hitung faktor kosinus sudut yaw berdasarkan rasio penyusutan lebar terhadap tinggi
+        let cos_yaw = (w_measured / (h_measured * base_ratio)).clamp(0.5, 1.0);
+
+        // Koreksi lebar piksel untuk mengompensasi penolehan kepala (yaw)
+        let d_pixels_corrected = w_measured / cos_yaw;
 
         // Lebar pelipis fisik rata-rata manusia secara antropometri (W_phys = 13.5 cm)
         let w_phys = 0.135f32; 
 
-        // Selesaikan formula pinhole: f = (d_pixels * Z) / W_phys
-        let f_measured = (d_pixels * estimated_depth_z) / w_phys;
+        // Selesaikan formula pinhole: f = (d_pixels_corrected * Z) / W_phys
+        let f_measured = (d_pixels_corrected * estimated_depth_z) / w_phys;
 
         // Lakukan pemulusan menggunakan filter low-pass
         self.estimated_focal_length = self.alpha * f_measured + (1.0 - self.alpha) * self.estimated_focal_length;
@@ -81,6 +99,10 @@ mod tests {
         // Buat jarak pelipis 100 piksel di layar
         vertices[127].position = ArVertex3D { x: 100.0, y: 0.0, z: 0.0 };
         vertices[356].position = ArVertex3D { x: 0.0, y: 0.0, z: 0.0 };
+
+        // Atur tinggi dahi-dagu agar rasio = 0.71 (100.0 / 0.71 = 140.84)
+        vertices[10].position = ArVertex3D { x: 0.0, y: 140.84, z: 0.0 };
+        vertices[152].position = ArVertex3D { x: 0.0, y: 0.0, z: 0.0 };
 
         // Lakukan update berkali-kali untuk melihat konvergensi filter
         // Z = 0.675 meter (jarak wajar tangan memegang HP)

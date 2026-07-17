@@ -100,6 +100,9 @@ pub struct FizgravityEngine {
 
     // Auto-calibrator intrinsik kamera online
     pub calibrator: RwLock<calibration::CameraAutoCalibrator>,
+
+    // Waktu pembaruan terakhir untuk delta waktu dinamis
+    pub last_update_time: RwLock<std::time::Instant>,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -202,6 +205,7 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
         face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(1.5, 0.15))),
         glitter_phase: RwLock::new((0.0, 0.0)),
         calibrator: RwLock::new(calibration::CameraAutoCalibrator::new()),
+        last_update_time: RwLock::new(std::time::Instant::now()),
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -501,9 +505,18 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
         let blendshapes_slice = std::slice::from_raw_parts(blendshapes_ptr, face::FACE_BLENDSHAPES_COUNT);
         shared_mesh.blendshapes.copy_from_slice(blendshapes_slice);
 
-        // Stabilisasikan face mesh secara adaptif menggunakan One-Euro Filter
+        // Stabilisasikan face mesh secara adaptif menggunakan One-Euro Filter dengan dt dinamis
+        let dt = if let Ok(mut last_time) = engine.last_update_time.write() {
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(*last_time).as_secs_f32();
+            *last_time = now;
+            elapsed.clamp(0.005, 0.1)
+        } else {
+            0.016
+        };
+
         if let Ok(mut stabilizer) = engine.face_stabilizer.write() {
-            stabilizer.stabilize_face_mesh(&mut shared_mesh.vertices, 0.016);
+            stabilizer.stabilize_face_mesh(&mut shared_mesh.vertices, dt);
         }
         
         0 // Sukses
@@ -670,6 +683,7 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_glitter_shimmer_shift(
     gyro_y: f32,
     gyro_z: f32,
     dt: f32,
+    screen_rotation_degrees: c_int,
     out_shift_x: *mut f32,
     out_shift_y: *mut f32,
 ) -> c_int {
@@ -678,9 +692,17 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_glitter_shimmer_shift(
     }
     let engine = &*(engine_ptr as *const FizgravityEngine);
     if let Ok(mut phase) = engine.glitter_phase.write() {
+        let rad = (screen_rotation_degrees as f32).to_radians();
+        let cos_r = rad.cos();
+        let sin_r = rad.sin();
+
+        // Putar vektor giroskop berdasarkan orientasi layar HP
+        let rot_x = gyro_x * cos_r - gyro_y * sin_r;
+        let rot_y = gyro_x * sin_r + gyro_y * cos_r;
+
         let decay = 0.96;
-        phase.0 = (phase.0 + gyro_x * dt) * decay;
-        phase.1 = (phase.1 + gyro_y * dt) * decay;
+        phase.0 = (phase.0 + rot_x * dt) * decay;
+        phase.1 = (phase.1 + rot_y * dt) * decay;
 
         let sensitivity = 0.15;
         *out_shift_x = phase.1 * sensitivity;
@@ -784,7 +806,7 @@ mod priority_ffi_tests {
         let mut sx = 0.0f32;
         let mut sy = 0.0f32;
         let res = unsafe {
-            fizgravity_engine_calculate_glitter_shimmer_shift(engine_ptr, 1.0, 2.0, 0.0, 0.016, &mut sx, &mut sy)
+            fizgravity_engine_calculate_glitter_shimmer_shift(engine_ptr, 1.0, 2.0, 0.0, 0.016, 90, &mut sx, &mut sy)
         };
         assert_eq!(res, 0);
         assert!(sx.abs() > 0.0);

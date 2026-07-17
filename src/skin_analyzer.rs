@@ -68,12 +68,10 @@ pub fn rgb_to_lab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     (l_star, a_star, b_star)
 }
 
-/// Menghitung sudut Individual Typology Angle (ITA°) berdasarkan luminansi L* dan kekuningan b*
 pub fn compute_ita_angle(l: f32, b: f32) -> f32 {
     let numerator = l - 50.0;
-    // Hindari pembagian dengan nol dengan memberikan perlindungan kecil jika b mendekati nol
     let denominator = if b.abs() < 1e-5 { 1e-5 } else { b };
-    let angle_rad = numerator.atan2(denominator);
+    let angle_rad = (numerator / denominator).atan();
     angle_rad * 180.0 / std::f32::consts::PI
 }
 
