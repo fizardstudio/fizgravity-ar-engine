@@ -241,7 +241,14 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
     // Jika data IMU tersedia, kita lakukan prediksi pose ke depan menggunakan ekstrapolasi kinematik (Late Latching)
     if !_imu_data.is_null() {
         // Ambil orientasi dan posisi nominal dari tracker VIO saat ini
-        let current_r = nalgebra::Rotation3::identity();
+        // Ekstrak orientasi aktif dari kuaternion pose saat ini (menghilangkan bias rotasi identitas)
+        let current_q = nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
+            engine.current_pose.rotation[0], // W
+            engine.current_pose.rotation[1], // X
+            engine.current_pose.rotation[2], // Y
+            engine.current_pose.rotation[3], // Z
+        ));
+        let current_r = current_q.to_rotation_matrix();
         let current_p = nalgebra::Vector3::new(engine.current_pose.position[0], engine.current_pose.position[1], engine.current_pose.position[2]);
         let current_v = nalgebra::Vector3::zeros();
 
