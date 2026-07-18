@@ -15,15 +15,17 @@ Mesin ini ditulis dalam bahasa **Rust** untuk menjamin keamanan memori (*thread-
     Ini memastikan blok matriks transisi kecepatan-orientasi $\Phi_{v, \theta} = -R_{gi} \cdot [\mathbf{a}_{local}]_\times \cdot dt$ konsisten secara spasial, mencegah drift/divergensi filter EKF.
 *   **Joseph Form Covariance Update:** Menjamin stabilitas numerik floating-point `f32` dengan menjaga kovariansi $P$ tetap simetris dan positif-semi-definit.
 *   **Dynamic Late Latching (Inertial Extrapolator):** Memprediksi pose kamera masa depan menggunakan sensor IMU 1000Hz dengan horizon delta waktu dinamis.
+*   **Dynamic Time Delta Tracking:** Secara otomatis mengukur interval waktu frame-ke-frame nyata menggunakan jam sistem presisi tinggi (`std::time::Instant`) untuk menstabilkan jaring wajah secara adaptif meskipun terjadi pelambatan rendering GPU (frame drops).
 
 ### 2. Spesialisasi Kecantikan & Riasan Premium (GlowMatch)
+*   **Canonical MediaPipe 2D UV Map Template:** Pemetaan tekstur 2D anatomis statis standard industri untuk mencegah distorsi riasan. Riasan digital seperti PNG eyeliner, lipstik, dan eye shadow akan melar-kerut secara dinamis mengikuti proporsi wajah unik setiap orang.
 *   **Continuous Face-Width Auto-Calibration Solver:** Mengoreksi parameter fokal lensa secara dinamis untuk meniadakan distorsi lensa ultra-wide menggunakan rasio lebar-tinggi wajah antropometri ($13.5\text{ cm}$) dan sudut penolehan kepala (yaw-angle foreshortening compensation).
 *   **Topology-Guided Dynamic Ambient Occlusion:** Memberikan shading kedalaman wajah pada celah bibir secara real-time yang dimodulasikan secara dinamis mengikuti blendshape `mouthOpen` ($B_{25}$) untuk menghindari visual datar.
 *   **Skin Detail High-Pass Blending Shader:** Mempertahankan pori-pori kulit asli pengguna di bawah lapisan foundation virtual.
-*   **ROI Local Contrast LBP & Sobel Wrinkles Analyzer:** Menganalisis tingkat kehalusan kulit (roughness) di area pipi dan intensitas kerutan (wrinkles) di dahi menggunakan filter LBP lokal dan operator gradien Sobel.
+*   **ROI Local Contrast LBP & Sobel Wrinkles Analyzer:** Menganalisis tingkat kehalusan kulit (roughness) di area pipi dan intensitas kerutan (wrinkles) di dahi menggunakan filter LBP lokal satu-langkah (*one-pass loop*) dan operator gradien Sobel.
 *   **McCamy Color Temperature Ambient Relighting:** Mengestimasi suhu warna lampu ruangan (Kelvin) menggunakan formula McCamy dan intensitas cahaya dari koefisien Spherical Harmonics untuk mengoreksi bias warna riasan.
-*   **Leaky Integrator Specular Glitter Shimmer:** Menggeser koordinat noise voronoi highlighter berdasarkan orientasi layar HP dan rotasi roll/pitch giroskop tanpa drift tak terbatas.
-*   **Forehead Geodesic Blending Mask:** Menghasilkan batas gradasi foundation yang memudar halus (smoothstep) ketika mendekati garis rambut dekat dahi (hairline).
+*   **Leaky Integrator Specular Glitter Shimmer:** Menggeser koordinat noise voronoi highlighter berdasarkan orientasi layar HP (portrait/landscape) dan rotasi roll/pitch giroskop dengan peluruhan eksponensial berbasis waktu nyata (FPS-invariant decay).
+*   **Forehead Geodesic Blending Mask:** Menghasilkan batas gradasi foundation yang memudar halus (smoothstep) ketika mendekati garis rambut dekat dahi (hairline) menggunakan optimalisasi perbandingan jarak kuadrat (*squared distance*).
 
 ---
 
@@ -34,16 +36,19 @@ Fizgravity AR Engine/
 ├── docs/
 │   ├── PRD_AR_Engine.md            # Spesifikasi Persyaratan Produk lengkap
 │   ├── Project_Plan_Roadmap.md     # Peta jalan pengembangan modular 6 Fase
-│   ├── comparison_report.md        # Laporan komparasi jujur dengan engine dunia
+│   ├── glowmatch_hyper_realistic_ar_makeup_research.md # Cetak biru formula optik premium
+│   ├── glowmatch_integration_audit.md # Panduan FFI IMU untuk Kotlin JNI & C++
+│   ├── glowmatch_zero_latency_tracking_brainstorm.md # Cetak biru pelacakan tanpa latensi
 │   └── next_gen_ar_modules_roadmap.md # Daftar periksa modul AR kecantikan GlowMatch
 ├── include/
 │   └── ar_bridge.h                 # Header jembatan interoperabilitas C++ (C-ABI FFI)
 ├── src/
 │   ├── face.rs                     # Modul AI Face mesh, normal, & interleaved VBO
+│   ├── canonical_uv.rs             # Template koordinat 2D wajah Canonical MediaPipe standar
 │   ├── calibration.rs              # Modul auto-kalibrasi fokal dinamis terkompensasi yaw
-│   ├── texture_analyzer.rs         # Modul analisis kesehatan kulit LBP & Sobel
+│   ├── texture_analyzer.rs         # Modul analisis kesehatan kulit LBP satu-langkah & Sobel
 │   ├── makeup_triangulator.rs      # Triangulasi Delaunay bibir, hairline & dynamic AO
-│   ├── skin_analyzer.rs            # ITA° skin classifier & Fitzpatrick di CIELAB
+│   ├── skin_analyzer.rs            # ITA° skin classifier klinis (atan) & Fitzpatrick
 │   ├── lighting.rs                 # Estimator 9 koefisien SH & suhu warna McCamy
 │   ├── lib.rs                      # Titik masuk ekspor FFI & tipe data FFI C-ABI
 │   ├── stabilizer.rs               # Modul One-Euro filter dengan delta waktu adaptif
@@ -65,6 +70,7 @@ void* engine = fizgravity_engine_init();
 // 2. Set koordinat landmark wajah dari ML Kit (Auto-stabilisasi & estimasi normal VBO terpicu)
 // vertices: 468 titik landmark wajah (dalam piksel)
 // blendshapes: 52 koefisien blendshape ARKit
+// FUNGSI INI OTOMATIS MENGUKUR ELAPSED TIME (dt) SYSTEM UNTUK ONE-EURO FILTER
 int res = fizgravity_engine_set_face_mesh(engine, vertices_ptr, blendshapes_ptr);
 ```
 
@@ -95,6 +101,7 @@ float shift_y = 0.0f;
 // gyro_x, gyro_y: data sensor kecepatan sudut giroskop
 // dt: interval waktu frame render
 // screen_rotation_degrees: rotasi orientasi layar HP (0, 90, 180, 270)
+// SISTEM MENGGUNAKAN FPS-INVARIANT EXPONENTIAL DECAY UNTUK STABILITAS FISIK
 fizgravity_engine_calculate_glitter_shimmer_shift(
     engine, gyro_x, gyro_y, gyro_z, dt, screen_rotation_degrees, &shift_x, &shift_y
 );
