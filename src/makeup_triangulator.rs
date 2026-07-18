@@ -108,6 +108,8 @@ impl MakeupTriangulator {
         // Tentukan batas landmark dahi paling atas (hairline)
         let hairline_indices = [103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 356];
 
+        let blend_radius = 0.035; // 3.5 centimeter (dalam satuan Meter)
+
         for i in 0..468 {
             let v_pos = face_vertices[i].position;
             let mut min_dist_sq = f32::MAX;
@@ -127,7 +129,6 @@ impl MakeupTriangulator {
             let min_dist = min_dist_sq.sqrt();
 
             // Jika jarak ke hairline sangat dekat (< 3.5cm), mulailah memudar secara non-linear (sigmoid/smoothstep)
-            let blend_radius = 0.035;
             if min_dist < blend_radius {
                 let factor = min_dist / blend_radius;
                 let alpha = factor * factor * (3.0 - 2.0 * factor);

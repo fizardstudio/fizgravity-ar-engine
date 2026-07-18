@@ -109,7 +109,16 @@ pub struct FizgravityEngine {
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
 /// Mengembalikan pointer mentah ke struktur mesin internal.
 #[no_mangle]
-pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
+pub unsafe extern "C" fn fizgravity_engine_init(model_path: *const std::os::raw::c_char) -> *mut c_void {
+    let path_str = if model_path.is_null() {
+        "models/face_mesh_with_blendshapes.onnx".to_string()
+    } else {
+        match std::ffi::CStr::from_ptr(model_path).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => "models/face_mesh_with_blendshapes.onnx".to_string(),
+        }
+    };
+
     // Bounded queue sebesar 1 frame saja untuk mencegah akumulasi lag frame usang
     let (ml_sender, ml_receiver) = sync_channel::<Vec<u8>>(1);
     // Bounded queue daur ulang buffer sebesar 3 frame (Triple Buffering)
@@ -151,8 +160,9 @@ pub unsafe extern "C" fn fizgravity_engine_init() -> *mut c_void {
     let hand_joints_clone = hand_joints_shared.clone();
     let recycle_clone = recycle_sender.clone();
     
+    let path_clone = path_str.clone();
     std::thread::spawn(move || {
-        let mut face_tracker = FaceTracker::new();
+        let mut face_tracker = FaceTracker::new(&path_clone);
         let mut hand_tracker = HandTracker::new();
         
         while let Ok(image_buffer) = ml_receiver.recv() {
@@ -489,8 +499,27 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
 
     if let Ok(mut shared_mesh) = engine.face_mesh_shared.write() {
         let vertices_slice = std::slice::from_raw_parts(vertices_ptr, face::FACE_MESH_VERTICES_COUNT);
+        
+        // Deteksi dan normalkan koordinat dari piksel (ML Kit) ke meter (Canonical/SI Unit)
+        let left_cheek = vertices_slice[234];
+        let right_cheek = vertices_slice[454];
+        let dx = left_cheek.x - right_cheek.x;
+        let dy = left_cheek.y - right_cheek.y;
+        let dz = left_cheek.z - right_cheek.z;
+        let face_width = (dx*dx + dy*dy + dz*dz).sqrt();
+
+        let unscale = if face_width > 1.5 {
+            0.145 / face_width
+        } else {
+            1.0
+        };
+
         for i in 0..face::FACE_MESH_VERTICES_COUNT {
-            shared_mesh.vertices[i].position = vertices_slice[i];
+            shared_mesh.vertices[i].position = ArVertex3D {
+                x: vertices_slice[i].x * unscale,
+                y: vertices_slice[i].y * unscale,
+                z: vertices_slice[i].z * unscale,
+            };
             
             // Map static UV coordinates based on canonical MediaPipe face texture template
             shared_mesh.vertices[i].uv = canonical_uv::CANONICAL_UV[i];
@@ -539,7 +568,7 @@ mod tests {
     #[test]
     fn test_set_face_mesh_bypass() {
         // Inisialisasi engine
-        let engine_ptr = unsafe { fizgravity_engine_init() };
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
         assert!(!engine_ptr.is_null());
 
         let test_vertices = [ArVertex3D { x: 1.0, y: 2.0, z: 3.0 }; face::FACE_MESH_VERTICES_COUNT];
@@ -572,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_get_neck_mesh() {
-        let engine_ptr = unsafe { fizgravity_engine_init() };
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
         assert!(!engine_ptr.is_null());
 
         let mut neck_mesh = face::ArNeckMesh {
@@ -798,7 +827,7 @@ mod priority_ffi_tests {
 
     #[test]
     fn test_ffi_glitter_shift() {
-        let engine_ptr = unsafe { fizgravity_engine_init() };
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
         assert!(!engine_ptr.is_null());
 
         let mut sx = 0.0f32;
@@ -884,7 +913,7 @@ mod medium_priority_ffi_tests {
 
     #[test]
     fn test_ffi_calibration_and_ao() {
-        let engine_ptr = unsafe { fizgravity_engine_init() };
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
         assert!(!engine_ptr.is_null());
 
         let mut focal = 0.0f32;
@@ -906,7 +935,7 @@ mod medium_priority_ffi_tests {
 
     #[test]
     fn test_canonical_uv_mapping() {
-        let engine_ptr = unsafe { fizgravity_engine_init() };
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
         assert!(!engine_ptr.is_null());
 
         let test_vertices = [ArVertex3D { x: 1.0, y: 2.0, z: 3.0 }; face::FACE_MESH_VERTICES_COUNT];

@@ -64,8 +64,8 @@ Berikut adalah panduan fungsi FFI C-ABI yang diekspos oleh `Fizgravity AR Engine
 
 ### 1. Inisialisasi & Set Data Kamera
 ```cpp
-// 1. Inisialisasi instansi mesin
-void* engine = fizgravity_engine_init();
+// 1. Inisialisasi instansi mesin dengan menyuplai path absolut model wajah ONNX
+void* engine = fizgravity_engine_init("/data/data/com.glowmatch.glowmatch/files/face_mesh.onnx");
 
 // 2. Set koordinat landmark wajah dari ML Kit (Auto-stabilisasi & estimasi normal VBO terpicu)
 // vertices: 468 titik landmark wajah (dalam piksel)
@@ -135,7 +135,7 @@ fizgravity_engine_calculate_dynamic_ao(engine, ao, 468);
 
 ---
 
-## 🛠️ Cara Membangun Proyek (Build Guide)
+## 🛠️ Cara Membangun Proyek (Build Guide) & Setup Android
 
 ### 1. Menjalankan Tes Unit & FFI
 ```bash
@@ -143,9 +143,42 @@ cargo test
 ```
 
 ### 2. Kompilasi Target Android (Shared Library)
-Kompilasi pustaka `.so` untuk ARM64 Android menggunakan `cargo-ndk`:
+Pastikan target toolchain Android sudah diinstal (`rustup target add aarch64-linux-android armv7-linux-androideabi`). Lakukan kompilasi silang menggunakan `cargo-ndk`:
 ```bash
-cargo ndk --target aarch64-linux-android build --release
+cargo ndk -t arm64-v8a -t armeabi-v7a -o app/src/main/jniLibs build --release
+```
+Perintah ini akan secara otomatis meletakkan file output `libfizgravity_ar.so` ke folder `jniLibs/arm64-v8a/` dan `jniLibs/armeabi-v7a/` pada proyek Android.
+
+### 3. Pemuatan Dinamis `libonnxruntime.so` (Dynamic Loading)
+Untuk menjaga agar ukuran binary Rust di bawah **<3MB**, kita memisahkan binding ONNX Runtime dari dynamic link statis:
+1. Unduh paket resmi **ONNX Runtime Android Archive (AAR)** (misalnya versi `1.16.3` dari Maven Central).
+2. Ekstrak AAR (ubah ekstensi menjadi `.zip`) lalu salin file `.so` yang sesuai dari folder `jni/`:
+   * Salin `jni/arm64-v8a/libonnxruntime.so` ke folder `jniLibs/arm64-v8a/` aplikasi Anda.
+   * Salin `jni/armeabi-v7a/libonnxruntime.so` ke folder `jniLibs/armeabi-v7a/` aplikasi Anda.
+3. Di sisi Kotlin (aplikasi GlowMatch), muat library ini secara berurutan **sebelum** menginisialisasi AR Engine:
+   ```kotlin
+   System.loadLibrary("onnxruntime")
+   System.loadLibrary("fizgravity_ar")
+   ```
+
+### 4. Salin File Model `.onnx` ke Local Storage di Kotlin
+Karena file di folder `assets/` APK tidak memiliki path sistem file biasa, salin file model wajah `.onnx` ke penyimpanan internal privat saat startup aplikasi agar dapat dibaca oleh C++/Rust:
+```kotlin
+fun getAbsoluteModelPath(context: Context, modelName: String): String {
+    val file = File(context.filesDir, modelName)
+    if (!file.exists()) {
+        context.assets.open(modelName).use { inputStream ->
+            FileOutputStream(file).use { outputStream ->
+                inputStream.copyTo(outputStream)
+            }
+        }
+    }
+    return file.absolutePath
+}
+
+// Gunakan:
+val path = getAbsoluteModelPath(context, "face_mesh_with_blendshapes.onnx")
+val engine = fizgravity_engine_init(path)
 ```
 
 ---

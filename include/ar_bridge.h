@@ -97,7 +97,7 @@ typedef struct {
  * @brief Menginisialisasi instansi baru dari Fizgravity AR Engine di sisi Rust.
  * @return Pointer mentah void* ke objek FizgravityEngine internal.
  */
-void* fizgravity_engine_init();
+void* fizgravity_engine_init(const char* model_path);
 
 /**
  * @brief Memperbarui pelacakan frame AR.
@@ -167,8 +167,8 @@ namespace fizgravity {
 
 class Engine {
 public:
-    Engine() {
-        m_engine_ptr = fizgravity_engine_init();
+    Engine(const char* model_path = nullptr) {
+        m_engine_ptr = fizgravity_engine_init(model_path);
     }
 
     ~Engine() {
