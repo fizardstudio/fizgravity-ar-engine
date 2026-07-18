@@ -22,6 +22,7 @@ pub mod stabilizer;
 pub mod makeup_triangulator;
 pub mod texture_analyzer;
 pub mod calibration;
+pub mod canonical_uv;
 
 use std::ffi::c_void;
 use std::os::raw::{c_float, c_int};
@@ -491,12 +492,8 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
         for i in 0..face::FACE_MESH_VERTICES_COUNT {
             shared_mesh.vertices[i].position = vertices_slice[i];
             
-            // Map static UV coordinates based on polar angles
-            let angle = (i as f32) * std::f32::consts::PI / 234.0;
-            shared_mesh.vertices[i].uv = face::ArTexCoord2D {
-                u: (angle.cos() + 1.0) * 0.5,
-                v: (angle.sin() + 1.0) * 0.5,
-            };
+            // Map static UV coordinates based on canonical MediaPipe face texture template
+            shared_mesh.vertices[i].uv = canonical_uv::CANONICAL_UV[i];
         }
 
         // Hitung normal wajah 3D secara radial elipsoid
@@ -903,6 +900,42 @@ mod medium_priority_ffi_tests {
         };
         assert_eq!(res2, 0);
         assert!(ao_buffer[0] > 0.0);
+
+        unsafe { fizgravity_engine_release(engine_ptr) };
+    }
+
+    #[test]
+    fn test_canonical_uv_mapping() {
+        let engine_ptr = unsafe { fizgravity_engine_init() };
+        assert!(!engine_ptr.is_null());
+
+        let test_vertices = [ArVertex3D { x: 1.0, y: 2.0, z: 3.0 }; face::FACE_MESH_VERTICES_COUNT];
+        let test_blendshapes = [0.5; face::FACE_BLENDSHAPES_COUNT];
+
+        let res = unsafe {
+            fizgravity_engine_set_face_mesh(
+                engine_ptr,
+                test_vertices.as_ptr(),
+                test_blendshapes.as_ptr(),
+            )
+        };
+        assert_eq!(res, 0);
+
+        let mut out_mesh = ArFaceMesh {
+            vertices: [ArFaceVertexInterleaved {
+                position: ArVertex3D { x: 0.0, y: 0.0, z: 0.0 },
+                normal: ArVertex3D { x: 0.0, y: 0.0, z: 1.0 },
+                uv: face::ArTexCoord2D { u: 0.0, v: 0.0 },
+            }; face::FACE_MESH_VERTICES_COUNT],
+            blendshapes: [0.0; face::FACE_BLENDSHAPES_COUNT],
+        };
+
+        let res2 = unsafe { fizgravity_engine_get_face_mesh(engine_ptr, &mut out_mesh) };
+        assert_eq!(res2, 0);
+
+        // Landmark 0 UV harus cocok dengan CANONICAL_UV[0] (u: 0.427942, v: 0.695278)
+        assert!((out_mesh.vertices[0].uv.u - 0.427942).abs() < 1e-4);
+        assert!((out_mesh.vertices[0].uv.v - 0.695278).abs() < 1e-4);
 
         unsafe { fizgravity_engine_release(engine_ptr) };
     }
