@@ -202,8 +202,16 @@ impl MsckfFilter {
         // Salin korelasi baru ke matriks kovariansi yang diperluas
         new_cov.slice_mut((old_dim, 0), (6, 15)).copy_from(&p_ic.transpose());
         new_cov.slice_mut((0, old_dim), (15, 6)).copy_from(&p_ic);
+
+        // Korelasi silang baru dengan kamera yang sudah ada: P_ac = P_ai * J_c^T
+        if old_dim > 15 {
+            let p_ai = self.state.covariance.slice((15, 0), (old_dim - 15, 15));
+            let p_ac = p_ai * j_c.clone().transpose();
+            new_cov.slice_mut((15, old_dim), (old_dim - 15, 6)).copy_from(&p_ac);
+            new_cov.slice_mut((old_dim, 15), (6, old_dim - 15)).copy_from(&p_ac.transpose());
+        }
         
-        // P_cc = J_c * P_ii * J_c^T + R_camera_noise -> P_cc = J_c * P_ic
+        // P_cc = J_c * P_ii * J_c^T -> P_cc = J_c * P_ic
         let p_cc = &j_c * &p_ic;
         new_cov.slice_mut((old_dim, old_dim), (6, 6)).copy_from(&p_cc);
 
@@ -319,6 +327,17 @@ impl MsckfFilter {
         imu.v_g += Vector3::new(delta_x[6], delta_x[7], delta_x[8]);
         imu.bg += Vector3::new(delta_x[9], delta_x[10], delta_x[11]);
         imu.ba += Vector3::new(delta_x[12], delta_x[13], delta_x[14]);
+
+        // Terapkan koreksi delta_x ke status klon kamera nominal
+        for i in 0..self.state.camera_states.len() {
+            let offset = 15 + 6 * i;
+            let d_theta_c = Vector3::new(delta_x[offset], delta_x[offset + 1], delta_x[offset + 2]);
+            let d_p_c = Vector3::new(delta_x[offset + 3], delta_x[offset + 4], delta_x[offset + 5]);
+            
+            let cam = &mut self.state.camera_states[i];
+            cam.r_gc = cam.r_gc * exp_map(&d_theta_c);
+            cam.p_c += d_p_c;
+        }
 
         // Perbarui Matriks Kovariansi menggunakan Joseph Form:
         // P = (I - K * H_o) * P * (I - K * H_o)^T + K * R_noise * K^T

@@ -30,6 +30,7 @@ impl CameraAutoCalibrator {
         image_w: f32,
         image_h: f32,
         estimated_depth_z: f32,
+        unscale: f32,
     ) {
         // Tentukan pusat gambar secara optik sebagai tebakan awal
         self.estimated_cx = image_w * 0.5;
@@ -57,7 +58,11 @@ impl CameraAutoCalibrator {
         let dy_v = p_top.y - p_bottom.y;
         let h_measured = (dx_v*dx_v + dy_v*dy_v).sqrt();
 
-        if w_measured < 10.0 || h_measured < 10.0 {
+        // Convert from meters back to pixels using the unscale factor
+        let w_pixels = w_measured / unscale;
+        let h_pixels = h_measured / unscale;
+
+        if w_pixels < 10.0 || h_pixels < 10.0 {
             return;
         }
 
@@ -65,10 +70,10 @@ impl CameraAutoCalibrator {
         let base_ratio = 0.71f32;
 
         // Hitung faktor kosinus sudut yaw berdasarkan rasio penyusutan lebar terhadap tinggi
-        let cos_yaw = (w_measured / (h_measured * base_ratio)).clamp(0.5, 1.0);
+        let cos_yaw = (w_pixels / (h_pixels * base_ratio)).clamp(0.5, 1.0);
 
         // Koreksi lebar piksel untuk mengompensasi penolehan kepala (yaw)
-        let d_pixels_corrected = w_measured / cos_yaw;
+        let d_pixels_corrected = w_pixels / cos_yaw;
 
         // Lebar pelipis fisik rata-rata manusia secara antropometri (W_phys = 13.5 cm)
         let w_phys = 0.135f32; 
@@ -108,7 +113,7 @@ mod tests {
         // Z = 0.675 meter (jarak wajar tangan memegang HP)
         // f_target = (100 * 0.675) / 0.135 = 500
         for _ in 0..100 {
-            calibrator.update_calibration(&vertices, 640.0, 480.0, 0.675);
+            calibrator.update_calibration(&vertices, 640.0, 480.0, 0.675, 1.0);
         }
 
         // Hasil estimasi harus konvergen ke ~500

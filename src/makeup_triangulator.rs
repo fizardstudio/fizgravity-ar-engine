@@ -8,8 +8,8 @@ pub const UPPER_LIP_OUTER: [usize; 11] = [61, 185, 40, 39, 37, 0, 267, 269, 270,
 pub const UPPER_LIP_INNER: [usize; 11] = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];
 
 // Indeks landmark kontur bibir bawah (MediaPipe)
-pub const LOWER_LIP_OUTER: [usize; 11] = [291, 325, 307, 375, 321, 17, 91, 146, 61, 181, 84]; // 11 titik diselaraskan
-pub const LOWER_LIP_INNER: [usize; 11] = [308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78];
+pub const LOWER_LIP_OUTER: [usize; 11] = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291];
+pub const LOWER_LIP_INNER: [usize; 11] = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308];
 
 pub struct MakeupTriangulator;
 
@@ -108,7 +108,17 @@ impl MakeupTriangulator {
         // Tentukan batas landmark dahi paling atas (hairline)
         let hairline_indices = [103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 356];
 
-        let blend_radius = 0.035; // 3.5 centimeter (dalam satuan Meter)
+        // Hitung lebar wajah secara dinamis dari landmark pipi kiri (234) dan pipi kanan (454)
+        let v234 = face_vertices[234].position;
+        let v454 = face_vertices[454].position;
+        let dx = v234.x - v454.x;
+        let dy = v234.y - v454.y;
+        let dz = v234.z - v454.z;
+        let face_width = (dx*dx + dy*dy + dz*dz).sqrt();
+
+        // Gunakan fallback jika data koordinat kosong/tidak terdeteksi (seperti pada unit test)
+        let norm_width = if face_width > 0.001 { face_width } else { 0.145 };
+        let blend_radius = norm_width * 0.24138;
 
         for i in 0..468 {
             let v_pos = face_vertices[i].position;
@@ -128,7 +138,7 @@ impl MakeupTriangulator {
 
             let min_dist = min_dist_sq.sqrt();
 
-            // Jika jarak ke hairline sangat dekat (< 3.5cm), mulailah memudar secara non-linear (sigmoid/smoothstep)
+            // Jika jarak ke hairline sangat dekat, mulailah memudar secara non-linear (smoothstep)
             if min_dist < blend_radius {
                 let factor = min_dist / blend_radius;
                 let alpha = factor * factor * (3.0 - 2.0 * factor);
@@ -190,6 +200,10 @@ mod tests {
     fn test_lower_lip_triangulation() {
         let tris = MakeupTriangulator::get_lower_lip_triangles();
         assert_eq!(tris.len(), 60);
+        // Segitiga pertama (o1, o2, i1) -> LOWER_LIP_OUTER[0] = 61, LOWER_LIP_OUTER[1] = 146, LOWER_LIP_INNER[0] = 78
+        assert_eq!(tris[0], 61);
+        assert_eq!(tris[1], 146);
+        assert_eq!(tris[2], 78);
     }
 
     #[test]

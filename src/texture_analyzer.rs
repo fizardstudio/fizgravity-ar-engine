@@ -107,7 +107,7 @@ impl SkinTextureAnalyzer {
         let mean_roughness = if lbp_count > 0 { lbp_sum / (lbp_count as f32 * 255.0) } else { 0.0 };
         let mean_contrast = if (roi_w * roi_h) > 0 { local_variance_sum / ((roi_w * roi_h) as f32) } else { 0.0 };
 
-        (mean_roughness, mean_contrast)
+        (mean_contrast, mean_roughness)
     }
 
     /// Menganalisis dahi secara khusus menggunakan filter Sobel horizontal untuk mengukur kerutan.
@@ -170,6 +170,24 @@ impl SkinTextureAnalyzer {
             0.0
         }
     }
+
+    /// Menghitung sudut ITA (Individual Typology Angle) dan menentukan undertone (Cool, Neutral, Warm)
+    /// berdasarkan sampel warna RGB kulit.
+    pub fn calculate_skin_undertone(r: u8, g: u8, b: u8) -> (f32, String) {
+        let (l, a_val, b_val) = crate::skin_analyzer::rgb_to_lab(r, g, b);
+        let ita_angle = crate::skin_analyzer::compute_ita_angle(l, b_val);
+
+        // Klasifikasi undertone berdasarkan hubungan antara a* (merah/pink) dan b* (kuning/hangat)
+        let undertone = if b_val > a_val + 3.0 {
+            "Warm".to_string()
+        } else if b_val < a_val - 2.0 {
+            "Cool".to_string()
+        } else {
+            "Neutral".to_string()
+        };
+
+        (ita_angle, undertone)
+    }
 }
 
 /// Menghitung jumlah transisi bit 0->1 dan 1->0 untuk mendeteksi keseragaman LBP pattern.
@@ -208,5 +226,21 @@ mod tests {
         // Gambar solid tidak boleh memiliki kekasaran atau kontras
         assert_eq!(roughness, 0.0);
         assert_eq!(contrast, 0.0);
+    }
+
+    #[test]
+    fn test_skin_undertone_classification() {
+        // Sampel Warm: (210, 180, 140)
+        let (ita1, under1) = SkinTextureAnalyzer::calculate_skin_undertone(210, 180, 140);
+        assert_eq!(under1, "Warm");
+        assert!(ita1 > -90.0 && ita1 < 90.0);
+
+        // Sampel Cool: (215, 175, 175)
+        let (_, under2) = SkinTextureAnalyzer::calculate_skin_undertone(215, 175, 175);
+        assert_eq!(under2, "Cool");
+
+        // Sampel Neutral: (200, 180, 170)
+        let (_, under3) = SkinTextureAnalyzer::calculate_skin_undertone(200, 180, 170);
+        assert_eq!(under3, "Neutral");
     }
 }

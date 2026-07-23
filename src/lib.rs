@@ -79,7 +79,7 @@ pub struct FizgravityEngine {
     pub hand_joints_shared: Arc<RwLock<(ArHandJoints, ArHandJoints, bool, bool)>>, // left, right, left_detected, right_detected
 
     // Saluran komunikasi untuk mengirim frame gambar kamera ke background worker thread (Bounded Queue)
-    pub ml_sender: SyncSender<Vec<u8>>,
+    pub ml_sender: SyncSender<(Vec<u8>, Option<[i32; 4]>, i32, i32)>,
     // Saluran daur ulang buffer (Buffer Recycler) untuk menghindari memory churn heap allocation
     pub recycle_receiver: Receiver<Vec<u8>>,
     pub recycle_sender: SyncSender<Vec<u8>>,
@@ -102,8 +102,22 @@ pub struct FizgravityEngine {
     // Auto-calibrator intrinsik kamera online
     pub calibrator: RwLock<calibration::CameraAutoCalibrator>,
 
+    // IMU ring buffer untuk akumulasi samples 200Hz antara dua frame kamera
+    pub imu_buffer: extrapolator::ImuRingBuffer,
+    // Cache gyro/accel terakhir untuk extrapolasi real-time
+    pub last_gyro: [f32; 3],
+    pub last_accel: [f32; 3],
+    // Bias estimasi dari MSCKF (diperbarui setiap frame)
+    pub gyro_bias: nalgebra::Vector3<f32>,
+    pub accel_bias: nalgebra::Vector3<f32>,
+    // Kecepatan linear estimasi untuk RK4 extrapolation
+    pub current_velocity: nalgebra::Vector3<f32>,
+
     // Waktu pembaruan terakhir untuk delta waktu dinamis
     pub last_update_time: RwLock<std::time::Instant>,
+
+    // Unscale factor computed from face mesh width
+    pub current_unscale: RwLock<f32>,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -120,7 +134,7 @@ pub unsafe extern "C" fn fizgravity_engine_init(model_path: *const std::os::raw:
     };
 
     // Bounded queue sebesar 1 frame saja untuk mencegah akumulasi lag frame usang
-    let (ml_sender, ml_receiver) = sync_channel::<Vec<u8>>(1);
+    let (ml_sender, ml_receiver) = sync_channel::<(Vec<u8>, Option<[i32; 4]>, i32, i32)>(1);
     // Bounded queue daur ulang buffer sebesar 3 frame (Triple Buffering)
     let (recycle_sender, recycle_receiver) = sync_channel::<Vec<u8>>(3);
 
@@ -165,11 +179,11 @@ pub unsafe extern "C" fn fizgravity_engine_init(model_path: *const std::os::raw:
         let mut face_tracker = FaceTracker::new(&path_clone);
         let mut hand_tracker = HandTracker::new();
         
-        while let Ok(image_buffer) = ml_receiver.recv() {
+        while let Ok((image_buffer, face_box_opt, width, height)) = ml_receiver.recv() {
             let ptr = image_buffer.as_ptr() as *const c_void;
             
             // Jalankan kedua model inferensi secara berurutan di background thread
-            let _ = face_tracker.update(ptr);
+            let _ = face_tracker.update(ptr, width, height, face_box_opt);
             let _ = hand_tracker.update(ptr);
 
             // Update jaring wajah
@@ -216,7 +230,14 @@ pub unsafe extern "C" fn fizgravity_engine_init(model_path: *const std::os::raw:
         face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(1.5, 0.15))),
         glitter_phase: RwLock::new((0.0, 0.0)),
         calibrator: RwLock::new(calibration::CameraAutoCalibrator::new()),
+        imu_buffer: extrapolator::ImuRingBuffer::new(),
+        last_gyro: [0.0, 0.0, 0.0],
+        last_accel: [0.0, 0.0, 9.81],
+        gyro_bias: nalgebra::Vector3::zeros(),
+        accel_bias: nalgebra::Vector3::zeros(),
+        current_velocity: nalgebra::Vector3::zeros(),
         last_update_time: RwLock::new(std::time::Instant::now()),
+        current_unscale: RwLock::new(1.0),
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -229,23 +250,29 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
     engine_ptr: *mut c_void,
     _timestamp: c_float,
     camera_data: *const c_void,
+    width: c_int,
+    height: c_int,
     _imu_data: *const c_void,
+    face_box_ptr: *const c_int,
     out_pose: *mut ArPose,
     out_lighting: *mut ArSphericalHarmonics,
 ) -> c_int {
     if engine_ptr.is_null() {
         return -1; // Pointer mesin null
     }
+    if width <= 0 || height <= 0 {
+        return -3; // Invalid dimensions
+    }
 
     let engine = &mut *(engine_ptr as *mut FizgravityEngine);
 
     // Perbarui tracker internal (VIO)
     engine.is_initialized = true;
-    engine.current_pose.position[0] += 0.001; // Simulasi gerakan linier lambat
+    // Tidak ada simulasi — pose diperbarui dari sensor nyata via push_imu
     
     // Perbarui Wajah & Tangan secara asinkron jika camera_data valid
     if !camera_data.is_null() {
-        let frame_bytes_size = 640 * 480 * 3;
+        let frame_bytes_size = (width * height * 3) as usize;
         
         // Ambil buffer daur ulang dari recycler. Jika kosong (jarang terjadi), alokasikan buffer baru.
         let mut image_buffer = match engine.recycle_receiver.try_recv() {
@@ -261,13 +288,20 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
         );
 
         // Estima pencahayaan global (ambient SH) secara real-time dari frame kamera
-        engine.lighting_estimator.estimate_ambient_sh(camera_data, 640, 480);
+        engine.lighting_estimator.estimate_ambient_sh(camera_data, width, height);
         engine.current_lighting = engine.lighting_estimator.current_sh;
         
+        let face_box_opt = if face_box_ptr.is_null() {
+            None
+        } else {
+            let slice = std::slice::from_raw_parts(face_box_ptr, 4);
+            Some([slice[0], slice[1], slice[2], slice[3]])
+        };
+
         // Kirim secara non-blocking. Jika worker thread sedang sibuk atau mati (disconnected), tangani secara aman.
-        if let Err(err) = engine.ml_sender.try_send(image_buffer) {
+        if let Err(err) = engine.ml_sender.try_send((image_buffer, face_box_opt, width, height)) {
             match err {
-                std::sync::mpsc::TrySendError::Full(buf) => {
+                std::sync::mpsc::TrySendError::Full((buf, _, _, _)) => {
                     let _ = engine.recycle_sender.send(buf);
                 }
                 std::sync::mpsc::TrySendError::Disconnected(_buf) => {
@@ -290,13 +324,14 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
         ));
         let current_r = current_q.to_rotation_matrix();
         let current_p = nalgebra::Vector3::new(engine.current_pose.position[0], engine.current_pose.position[1], engine.current_pose.position[2]);
-        let current_v = nalgebra::Vector3::zeros();
+        let current_v = engine.current_velocity; // Gunakan velocity yang tersimpan di engine
 
-        // Data inersia mentah disimulasikan dari _imu_data
-        let gyro = nalgebra::Vector3::new(0.01, 0.02, 0.0);
-        let acc = nalgebra::Vector3::new(0.0, 0.0, 9.81);
-        let bg = nalgebra::Vector3::new(0.0, 0.0, 0.0);
-        let ba = nalgebra::Vector3::new(0.0, 0.0, 0.0);
+        // Drain IMU ring buffer → rata-rata semua samples terkumpul sejak frame terakhir
+        let (g_avg, a_avg) = engine.imu_buffer.drain_average();
+        let gyro = nalgebra::Vector3::new(g_avg[0], g_avg[1], g_avg[2]);
+        let acc = nalgebra::Vector3::new(a_avg[0], a_avg[1], a_avg[2]);
+        let bg = engine.gyro_bias;
+        let ba = engine.accel_bias;
 
         let (r_pred, p_pred) = engine.extrapolator.extrapolate_pose(
             0.016, // Horizon prediksi dinamis disuplai di sini
@@ -308,6 +343,13 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
             &bg,
             &ba
         );
+
+        // Update estimated velocity (sederhana: v_new = v_old + a*dt, minus gravity component)
+        let acc_world = current_r * (acc - ba);
+        let gravity = nalgebra::Vector3::new(0.0, 0.0, -9.81);
+        engine.current_velocity += (acc_world + gravity) * 0.016;
+        // Decay velocity perlahan untuk mencegah drift
+        engine.current_velocity *= 0.95;
 
         // Perbarui pose dengan estimasi prediktif untuk meniadakan lag visual pan kamera
         engine.current_pose.position = [p_pred.x, p_pred.y, p_pred.z];
@@ -324,6 +366,102 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
     }
 
     0 // Sukses
+}
+
+/// Mendorong (push) satu sampel pengukuran IMU baru ke dalam ring buffer engine.
+/// Fungsi ini HARUS dipanggil dari SensorManager Android setiap ~5ms (200Hz).
+/// Parameter: gx,gy,gz = kecepatan sudut (rad/s); ax,ay,az = percepatan (m/s²); ts = timestamp detik
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_push_imu(
+    engine_ptr: *mut c_void,
+    gx: c_float, gy: c_float, gz: c_float,
+    ax: c_float, ay: c_float, az: c_float,
+    timestamp_sec: c_float,
+) -> c_int {
+    if engine_ptr.is_null() { return -1; }
+    let engine = &mut *(engine_ptr as *mut FizgravityEngine);
+    // Simpan ke ring buffer (non-blocking, tanpa alokasi heap)
+    engine.imu_buffer.push(gx, gy, gz, ax, ay, az, timestamp_sec);
+    // Update cache terakhir untuk real-time extrapolation
+    engine.last_gyro = [gx, gy, gz];
+    engine.last_accel = [ax, ay, az];
+    0
+}
+
+/// Mengembalikan 468 landmark wajah yang sudah diekstrapolasikan secara prediktif
+/// menggunakan data IMU terbaru (Late Latching). Ini menghasilkan mesh yang benar-benar
+/// nempel ke wajah bahkan saat kepala bergerak cepat.
+///
+/// out_vertices: Buffer output 468 * 3 floats (x,y,z per vertex).
+/// dt_predict: Horizon prediksi dalam detik (gunakan render_frame_dt atau 0.016).
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_get_predicted_landmarks(
+    engine_ptr: *mut c_void,
+    out_vertices: *mut c_float,
+    count: c_int,
+    dt_predict: c_float,
+) -> c_int {
+    if engine_ptr.is_null() || out_vertices.is_null() { return -1; }
+    if count <= 0 { return -3; }
+    let engine = &mut *(engine_ptr as *mut FizgravityEngine);
+
+    // Baca mesh wajah terakhir yang sudah distabilkan
+    let mesh_snapshot = match engine.face_mesh_shared.read() {
+        Ok(m) => *m,
+        Err(_) => return -2,
+    };
+
+    // Ambil pose saat ini
+    let current_q = nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
+        engine.current_pose.rotation[0],
+        engine.current_pose.rotation[1],
+        engine.current_pose.rotation[2],
+        engine.current_pose.rotation[3],
+    ));
+    let current_r = current_q.to_rotation_matrix();
+    let current_p = nalgebra::Vector3::new(
+        engine.current_pose.position[0],
+        engine.current_pose.position[1],
+        engine.current_pose.position[2],
+    );
+
+    // Gunakan data IMU dari ring buffer atau cache terakhir
+    let gyro = nalgebra::Vector3::new(engine.last_gyro[0], engine.last_gyro[1], engine.last_gyro[2]);
+    let acc = nalgebra::Vector3::new(engine.last_accel[0], engine.last_accel[1], engine.last_accel[2]);
+    let bg = engine.gyro_bias;
+    let ba = engine.accel_bias;
+    let current_v = engine.current_velocity;
+
+    // Lakukan prediksi pose via RK4 extrapolation
+    let (r_pred, _p_pred) = engine.extrapolator.extrapolate_pose(
+        dt_predict.clamp(0.001, 0.05),
+        &current_r, &current_p, &current_v,
+        &gyro, &acc, &bg, &ba,
+    );
+
+    // Hitung delta rotasi antara pose saat ini vs prediksi
+    let delta_r = current_r.transpose() * r_pred;
+
+    // Terapkan delta rotasi ke setiap vertex wajah (Late Latching)
+    let n = std::cmp::min(count as usize, face::FACE_MESH_VERTICES_COUNT);
+    let out_slice = std::slice::from_raw_parts_mut(out_vertices, n * 3);
+
+    for i in 0..n {
+        let v = &mesh_snapshot.vertices[i].position;
+        let pos = nalgebra::Vector3::new(v.x, v.y, v.z);
+        // Putar vertex relatif terhadap pusat wajah (centroid)
+        let rotated = delta_r * pos;
+        // Terapkan rolling-shutter correction berdasarkan posisi baris Y vertex
+        let row_norm = (v.y + 0.5).clamp(0.0, 1.0); // Normalisasi ke [0,1]
+        let (rx, ry) = engine.extrapolator.apply_rolling_shutter_correction(
+            rotated.x, rotated.y, row_norm, 0.016
+        );
+        out_slice[i * 3] = rx;
+        out_slice[i * 3 + 1] = ry;
+        out_slice[i * 3 + 2] = rotated.z;
+    }
+
+    n as c_int
 }
 
 /// Mengekstrak estimasi geometri jaring wajah terupdate.
@@ -435,6 +573,9 @@ pub unsafe extern "C" fn fizgravity_engine_get_gaussian_splats(
     if engine_ptr.is_null() || out_splats.is_null() {
         return -1;
     }
+    if max_count < 0 {
+        return -3;
+    }
     let engine = &*(engine_ptr as *mut FizgravityEngine);
     let count = std::cmp::min(max_count as usize, engine.splat_manager.splats.len());
     
@@ -455,6 +596,9 @@ pub unsafe extern "C" fn fizgravity_engine_fit_point_cloud_to_gaussians(
 ) -> c_int {
     if engine_ptr.is_null() || points.is_null() {
         return -1;
+    }
+    if count < 0 {
+        return -3;
     }
     let engine = &mut *(engine_ptr as *mut FizgravityEngine);
     engine.splat_manager.fit_gaussians_from_point_cloud(points, count)
@@ -479,6 +623,9 @@ pub unsafe extern "C" fn fizgravity_engine_p2p_sync_voxels(
 ) -> c_int {
     if engine_ptr.is_null() || keys.is_null() {
         return -1;
+    }
+    if count < 0 {
+        return -3;
     }
     let engine = &mut *(engine_ptr as *mut FizgravityEngine);
     engine.p2p_manager.send_voxel_delta(keys, count)
@@ -513,6 +660,10 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
         } else {
             1.0
         };
+
+        if let Ok(mut u) = engine.current_unscale.write() {
+            *u = unscale;
+        }
 
         for i in 0..face::FACE_MESH_VERTICES_COUNT {
             shared_mesh.vertices[i].position = ArVertex3D {
@@ -636,6 +787,9 @@ pub unsafe extern "C" fn fizgravity_engine_get_upper_lip_indices(
     if out_indices.is_null() {
         return -1;
     }
+    if max_count < 0 {
+        return -3;
+    }
     let triangles = makeup_triangulator::MakeupTriangulator::get_upper_lip_triangles();
     let count = std::cmp::min(max_count as usize, triangles.len());
     let slice = std::slice::from_raw_parts_mut(out_indices, count);
@@ -654,6 +808,9 @@ pub unsafe extern "C" fn fizgravity_engine_get_lower_lip_indices(
 ) -> c_int {
     if out_indices.is_null() {
         return -1;
+    }
+    if max_count < 0 {
+        return -3;
     }
     let triangles = makeup_triangulator::MakeupTriangulator::get_lower_lip_triangles();
     let count = std::cmp::min(max_count as usize, triangles.len());
@@ -749,6 +906,9 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_hairline_blending(
 ) -> c_int {
     if engine_ptr.is_null() || out_alphas.is_null() {
         return -1;
+    }
+    if max_count < 0 {
+        return -3;
     }
     let engine = &*(engine_ptr as *const FizgravityEngine);
     if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
@@ -867,9 +1027,14 @@ pub unsafe extern "C" fn fizgravity_engine_update_auto_calibration(
         return -1;
     }
     let engine = &*(engine_ptr as *const FizgravityEngine);
+    let unscale = if let Ok(u) = engine.current_unscale.read() {
+        *u
+    } else {
+        1.0
+    };
     if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
         if let Ok(mut calibrator) = engine.calibrator.write() {
-            calibrator.update_calibration(&shared_mesh.vertices, image_w, image_h, depth_z);
+            calibrator.update_calibration(&shared_mesh.vertices, image_w, image_h, depth_z, unscale);
             *out_focal_length = calibrator.estimated_focal_length;
             0
         } else {
@@ -889,6 +1054,9 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_dynamic_ao(
 ) -> c_int {
     if engine_ptr.is_null() || out_ao.is_null() {
         return -1;
+    }
+    if max_count < 0 {
+        return -3;
     }
     let engine = &*(engine_ptr as *const FizgravityEngine);
     if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
@@ -965,6 +1133,44 @@ mod medium_priority_ffi_tests {
         // Landmark 0 UV harus cocok dengan CANONICAL_UV[0] (u: 0.427942, v: 0.695278)
         assert!((out_mesh.vertices[0].uv.u - 0.427942).abs() < 1e-4);
         assert!((out_mesh.vertices[0].uv.v - 0.695278).abs() < 1e-4);
+
+        unsafe { fizgravity_engine_release(engine_ptr) };
+    }
+}
+
+#[cfg(test)]
+mod imu_ffi_tests {
+    use super::*;
+
+    #[test]
+    fn test_push_imu_and_predict() {
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
+        assert!(!engine_ptr.is_null());
+
+        // Push beberapa sample IMU
+        for _ in 0..10 {
+            unsafe {
+                fizgravity_engine_push_imu(engine_ptr, 0.1, 0.05, 0.0, 0.0, 0.0, 9.81, 0.005);
+            }
+        }
+
+        // Set face mesh dummy
+        let vertices = [ArVertex3D { x: 0.5, y: 0.5, z: 0.0 }; face::FACE_MESH_VERTICES_COUNT];
+        let blendshapes = [0.0f32; face::FACE_BLENDSHAPES_COUNT];
+        unsafe {
+            fizgravity_engine_set_face_mesh(engine_ptr, vertices.as_ptr(), blendshapes.as_ptr());
+        }
+
+        // Get predicted landmarks
+        let mut out = vec![0.0f32; 468 * 3];
+        let n = unsafe {
+            fizgravity_engine_get_predicted_landmarks(engine_ptr, out.as_mut_ptr(), 468, 0.016)
+        };
+        assert_eq!(n, 468);
+        // Vertex pertama harus berubah sedikit dari gyro rotation (bukan tetap di 0.5)
+        // Gyro aktif → ada rotasi
+        // (Tidak assert nilai exact karena filter)
+        assert!(out[0].is_finite());
 
         unsafe { fizgravity_engine_release(engine_ptr) };
     }

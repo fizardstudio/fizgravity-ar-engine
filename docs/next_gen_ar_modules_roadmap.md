@@ -102,3 +102,33 @@ Dokumen ini berfungsi sebagai daftar periksa (*checklist*) fitur pengembangan un
 - [x] **24. Estimator Ambient SH Cahaya Kamera Perspektif (`src/lighting.rs`)** (Proyeksi 9 koefisien SH Orde 2)
 - [x] **25. Proteksi Raycast TSDF Voxel Hashing (`src/tsdf.rs`)** (Mencegah alokasi voxel negatif belakang kamera)
 - [x] **26. Interleaved Face Mesh VBO Layout (`src/face.rs`)** (Layout 20 bytes per vertex kontigu untuk reduksi cache misses GPU)
+
+---
+
+## 🎨 Kategori 5: Uji Coba Riasan Hiper-Realistis Komprehensif (GlowMatch VTO Spec)
+
+Daftar periksa ini merinci status implementasi dan visual rendering dari setiap tipe makeup agar mencapai standar visual fisik (*Physically Based Rendering*) yang presisi dan realistis:
+
+- [/] **27. Kompleksi Wajah (Foundation, Concealer & Skin Tint)**
+  * **Dampak**: Menyatukan pigmen bedak digital secara mulus di atas kulit asli tanpa menghilangkan pori-pori dan noda alami wajah (*albedo preservation*).
+  * **Detail Shader/Metode**: Blending masker hairline (ADF), high-pass filtering, koreksi pencahayaan McCamy, serta pilihan hasil akhir: *Matte*, *Satin*, *Dewy/Glowy*, dan *Sheer*.
+
+- [/] **28. Riasan Bibir Premium (Lipstick, Lip Gloss, Lip Liner & Ombre)**
+  * **Dampak**: Memberikan riasan bibir presisi yang tidak bocor keluar garis bibir, memiliki bayangan 3D di celah dalam, dan efek kilau dinamis.
+  * **Detail Shader/Metode**: Delaunay triangulation bibir atas/bawah, modulasi bayangan dynamic AO, layering lip liner, serta pilihan tekstur: *Matte*, *Satin*, *Gloss (Wet Look)*, *Shimmer*, *Metallic*, *Holographic*, dan *Ombre (Gradasi)*.
+
+- [ ] **29. Riasan Mata Tingkat Detil (Eyeshadow, Eyeliner, Mascara & Bulu Mata 3D)**
+  * **Dampak**: Riasan mata presisi tinggi yang melacak pergerakan kelopak mata saat berkedip tanpa oklusi terputus.
+  * **Detail Shader/Metode**:
+    * *Eyeshadow*: Renderer multi-tone (hingga 5 warna) dengan kilau glitter logam mikro (Voronoi noise / modifikasi PhongMaterial).
+    * *Eyeliner*: 300+ pustaka tarikan garis presisi 3D yang mengikuti kelengkungan kelopak mata.
+    * *Mascara & Bulu Mata 3D*: Helaian rambut 3D geometris penuh yang menempel pada kelopak mata atas/bawah dan bergoyang halus.
+
+- [/] **30. Pembentukan Wajah 3D (Contour, Highlight & Nose Shading)**
+  * **Dampak**: Memanipulasi visual anatomi wajah secara real-time seolah-olah ditimpa bayangan fisik (ramping hidung/tulang pipi tirus).
+  * **Detail Shader/Metode**: Perhitungan normal 3D vertex, Lambertian shadow shader untuk nose contour dan rahang, serta specular highlight dinamis yang berpindah posisi responsif terhadap arah lampu ruangan dan rotasi giroskop HP.
+
+- [ ] **31. Lensa Kontak Warna & Pupil AR (Softlens & Pupil Dilation)**
+  * **Dampak**: Uji coba lensa kontak warna yang menyatu alami dengan struktur mata pengguna.
+  * **Detail Shader/Metode**: Pemetaan sferis (*spherical warping*) warna lensa kontak virtual di atas iris pengguna dan dilatasi pupil adaptif yang membesar/mengecil mengikuti intensitas cahaya sekitar.
+
