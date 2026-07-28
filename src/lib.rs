@@ -118,6 +118,14 @@ pub struct FizgravityEngine {
 
     // Unscale factor computed from face mesh width
     pub current_unscale: RwLock<f32>,
+
+    // Smoothing state for fizgravity_engine_get_predicted_landmarks: blends each
+    // predicted frame against the previous predicted frame so per-call noise (raw
+    // gyro sampling, etc.) doesn't show up as visible jitter in the interpolated
+    // output. Reset whenever a fresh real detection lands via set_face_mesh, so the
+    // smoothing never fights the ground-truth update or adds lag across real frames.
+    pub last_predicted_vertices: [ArVertex3D; 468],
+    pub has_last_predicted: bool,
 }
 
 /// Menginisialisasi instansi baru dari Fizgravity AR Engine.
@@ -227,7 +235,7 @@ pub unsafe extern "C" fn fizgravity_engine_init(model_path: *const std::os::raw:
         p2p_manager: P2PManager::new(),
         lighting_estimator: lighting::LightingEstimator::new(),
         extrapolator: extrapolator::MotionExtrapolator::new(0.016),
-        face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(1.5, 0.15))),
+        face_stabilizer: Arc::new(RwLock::new(stabilizer::ArFaceMeshStabilizer::new(0.4, 0.05))),
         glitter_phase: RwLock::new((0.0, 0.0)),
         calibrator: RwLock::new(calibration::CameraAutoCalibrator::new()),
         imu_buffer: extrapolator::ImuRingBuffer::new(),
@@ -238,6 +246,8 @@ pub unsafe extern "C" fn fizgravity_engine_init(model_path: *const std::os::raw:
         current_velocity: nalgebra::Vector3::zeros(),
         last_update_time: RwLock::new(std::time::Instant::now()),
         current_unscale: RwLock::new(1.0),
+        last_predicted_vertices: [ArVertex3D { x: 0.0, y: 0.0, z: 0.0 }; 468],
+        has_last_predicted: false,
     });
 
     Box::into_raw(engine) as *mut c_void
@@ -425,9 +435,17 @@ pub unsafe extern "C" fn fizgravity_engine_get_predicted_landmarks(
         engine.current_pose.position[2],
     );
 
-    // Gunakan data IMU dari ring buffer atau cache terakhir
-    let gyro = nalgebra::Vector3::new(engine.last_gyro[0], engine.last_gyro[1], engine.last_gyro[2]);
-    let acc = nalgebra::Vector3::new(engine.last_accel[0], engine.last_accel[1], engine.last_accel[2]);
+    // Rata-ratakan seluruh sample IMU yang terkumpul sejak call terakhir, alih-alih
+    // memakai satu sample mentah terakhir (engine.last_gyro/last_accel). Sensor gyro
+    // Android dikirim di SENSOR_DELAY_FASTEST (~200Hz) sementara fungsi ini hanya
+    // dipanggil per render tick (~30Hz) — mengambil satu sample instan berarti hasil
+    // ekstrapolasi rotasi sangat rentan ke noise per-sample MEMS gyro murni, dan noise
+    // itu hanya terlihat sebagai jitter visual saat ponsel benar-benar bergerak (saat
+    // diam, gyro mentah maupun rata-rata sama-sama mendekati nol). Rata-rata ring
+    // buffer meredam noise per-sample ini sebelum masuk ke RK4 extrapolation.
+    let (gyro_avg, accel_avg) = engine.imu_buffer.drain_average();
+    let gyro = nalgebra::Vector3::new(gyro_avg[0], gyro_avg[1], gyro_avg[2]);
+    let acc = nalgebra::Vector3::new(accel_avg[0], accel_avg[1], accel_avg[2]);
     let bg = engine.gyro_bias;
     let ba = engine.accel_bias;
     let current_v = engine.current_velocity;
@@ -446,6 +464,12 @@ pub unsafe extern "C" fn fizgravity_engine_get_predicted_landmarks(
     let n = std::cmp::min(count as usize, face::FACE_MESH_VERTICES_COUNT);
     let out_slice = std::slice::from_raw_parts_mut(out_vertices, n * 3);
 
+    // Blend this call's output against the previous predicted call's output so
+    // per-call noise (raw single-sample gyro reading, etc.) doesn't read as visible
+    // jitter — reset to false whenever a fresh real detection lands (set_face_mesh),
+    // so this never adds lag across real updates, only smooths between them.
+    let blend = 0.5f32;
+
     for i in 0..n {
         let v = &mesh_snapshot.vertices[i].position;
         let pos = nalgebra::Vector3::new(v.x, v.y, v.z);
@@ -456,9 +480,58 @@ pub unsafe extern "C" fn fizgravity_engine_get_predicted_landmarks(
         let (rx, ry) = engine.extrapolator.apply_rolling_shutter_correction(
             rotated.x, rotated.y, row_norm, 0.016
         );
-        out_slice[i * 3] = rx;
-        out_slice[i * 3 + 1] = ry;
-        out_slice[i * 3 + 2] = rotated.z;
+        let mut fx = rx;
+        let mut fy = ry;
+        let mut fz = rotated.z;
+
+        if engine.has_last_predicted {
+            let last = &engine.last_predicted_vertices[i];
+            fx = last.x + (fx - last.x) * blend;
+            fy = last.y + (fy - last.y) * blend;
+            fz = last.z + (fz - last.z) * blend;
+        }
+
+        engine.last_predicted_vertices[i] = ArVertex3D { x: fx, y: fy, z: fz };
+        out_slice[i * 3] = fx;
+        out_slice[i * 3 + 1] = fy;
+        out_slice[i * 3 + 2] = fz;
+    }
+    engine.has_last_predicted = true;
+
+    n as c_int
+}
+
+/// Mengembalikan 468 landmark wajah hasil stabilisasi One-Euro filter SAJA —
+/// tanpa ekstrapolasi RK4 / rotasi gyro / blend prediktif. Dipakai untuk frame
+/// real (deteksi MediaPipe baru), supaya noise IMU (gyro/accel) dari
+/// get_predicted_landmarks tidak ikut menumpang ke frame yang sudah punya
+/// ground-truth. get_predicted_landmarks tetap dipakai, tapi HANYA untuk
+/// mengisi celah antar-deteksi (frame interpolasi) di render thread.
+///
+/// out_vertices: Buffer output 468 * 3 floats (x,y,z per vertex).
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_get_stabilized_landmarks(
+    engine_ptr: *mut c_void,
+    out_vertices: *mut c_float,
+    count: c_int,
+) -> c_int {
+    if engine_ptr.is_null() || out_vertices.is_null() { return -1; }
+    if count <= 0 { return -3; }
+    let engine = &*(engine_ptr as *mut FizgravityEngine);
+
+    let mesh_snapshot = match engine.face_mesh_shared.read() {
+        Ok(m) => *m,
+        Err(_) => return -2,
+    };
+
+    let n = std::cmp::min(count as usize, face::FACE_MESH_VERTICES_COUNT);
+    let out_slice = std::slice::from_raw_parts_mut(out_vertices, n * 3);
+
+    for i in 0..n {
+        let v = &mesh_snapshot.vertices[i].position;
+        out_slice[i * 3] = v.x;
+        out_slice[i * 3 + 1] = v.y;
+        out_slice[i * 3 + 2] = v.z;
     }
 
     n as c_int
@@ -655,15 +728,28 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
         let dz = left_cheek.z - right_cheek.z;
         let face_width = (dx*dx + dy*dy + dz*dz).sqrt();
 
-        let unscale = if face_width > 1.5 {
+        let raw_unscale = if face_width > 1.5 {
             0.145 / face_width
         } else {
             1.0
         };
 
-        if let Ok(mut u) = engine.current_unscale.write() {
-            *u = unscale;
-        }
+        // Smooth unscale via EMA before applying it. This factor multiplies EVERY
+        // vertex identically, so per-frame noise in face_width (cheek landmark
+        // jitter, natural head micro-yaw changing apparent cheek-to-cheek depth)
+        // becomes a correlated whole-mesh scale-pulse — the per-vertex One-Euro
+        // filter below can't remove this because each filter only sees its own
+        // already-scaled series and has no way to know all 468 points share one
+        // multiplicative noise source. alpha=0.2 filters that noise while staying
+        // fast enough to track genuine camera-distance changes without added lag.
+        const UNSCALE_SMOOTHING_ALPHA: f32 = 0.2;
+        let unscale = if let Ok(mut u) = engine.current_unscale.write() {
+            let smoothed = *u + (raw_unscale - *u) * UNSCALE_SMOOTHING_ALPHA;
+            *u = smoothed;
+            smoothed
+        } else {
+            raw_unscale
+        };
 
         for i in 0..face::FACE_MESH_VERTICES_COUNT {
             shared_mesh.vertices[i].position = ArVertex3D {
@@ -695,7 +781,16 @@ pub unsafe extern "C" fn fizgravity_engine_set_face_mesh(
         if let Ok(mut stabilizer) = engine.face_stabilizer.write() {
             stabilizer.stabilize_face_mesh(&mut shared_mesh.vertices, dt);
         }
-        
+
+        // Seed the prediction-smoothing cache with this fresh (already One-Euro
+        // filtered) real position so the next predicted call blends continuously
+        // from here, instead of snapping straight to an unblended raw prediction
+        // that may disagree with where the real detection actually landed.
+        for i in 0..face::FACE_MESH_VERTICES_COUNT {
+            engine.last_predicted_vertices[i] = shared_mesh.vertices[i].position;
+        }
+        engine.has_last_predicted = true;
+
         0 // Sukses
     } else {
         -2 // Gagal write lock

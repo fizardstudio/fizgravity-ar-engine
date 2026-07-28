@@ -127,11 +127,14 @@ impl ArFaceMeshStabilizer {
             // Exponential smoothing pada RMS velocity agar transisi halus
             self.prev_rms_velocity = 0.7 * rms_velocity + 0.3 * self.prev_rms_velocity;
 
-            // Adaptive beta:
-            // - Diam (rms < 0.02): beta = 0.05 → filter sangat halus, hilangkan jitter
-            // - Bergerak sedang (rms ≈ 0.1): beta = 0.3 → balance
-            // - Bergerak cepat (rms > 0.5): beta = 2.0 → filter sangat responsif, ikuti gerakan
-            let adaptive_beta = (self.prev_rms_velocity * 4.0).clamp(0.05, 2.5);
+            // Adaptive beta — ceiling lowered from 2.5 to 0.8: on-device measurement
+            // (MatchAndBeauty's normalized landmark scale) showed this reaching high
+            // responsiveness values even for a mostly-still face, i.e. ordinary
+            // micro-motion (blinks, breathing sway) was being read as "fast movement"
+            // and reducing smoothing right when it should have stayed smooth — a
+            // noise-amplifying feedback loop rather than the intended fast-motion
+            // responsiveness. Keeping the low end so genuine fast motion still tracks.
+            let adaptive_beta = (self.prev_rms_velocity * 4.0).clamp(0.02, 0.4);
 
             for i in 0..468 {
                 self.filters_x[i].set_beta(adaptive_beta);
