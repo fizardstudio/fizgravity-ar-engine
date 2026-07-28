@@ -1043,6 +1043,58 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_hairline_blending(
     }
 }
 
+/// Mengestimasi suhu warna (CCT, Kelvin) dan intensitas pencahayaan ambient dari frame
+/// kamera terkini, memakai wajah pengguna sebagai diffuse light probe (lihat
+/// lighting::LightingEstimator::estimate_ambient_sh untuk detail teknik). Berbeda dari
+/// fizgravity_engine_update_frame (yang menjalankan seluruh pipeline VIO/pose/wajah/tangan
+/// sekaligus), fungsi ini adalah entry point FFI khusus & fokus HANYA untuk estimasi
+/// pencahayaan, sehingga bisa dipanggil independen tanpa memicu efek samping lain dari
+/// update_frame (mis. push frame ke worker thread ML).
+#[no_mangle]
+pub unsafe extern "C" fn fizgravity_engine_estimate_lighting(
+    engine_ptr: *mut c_void,
+    camera_data: *const c_void,
+    width: c_int,
+    height: c_int,
+    row_stride: c_int,
+    buffer_len_bytes: usize,
+    out_cct: *mut f32,
+    out_intensity: *mut f32,
+) -> c_int {
+    if engine_ptr.is_null() || camera_data.is_null() || out_cct.is_null() || out_intensity.is_null() {
+        return -1;
+    }
+    if width <= 0 || height <= 0 || row_stride <= 0 {
+        return -3;
+    }
+
+    let engine = &mut *(engine_ptr as *mut FizgravityEngine);
+
+    if let Ok(shared_mesh) = engine.face_mesh_shared.read() {
+        engine.lighting_estimator.estimate_ambient_sh(
+            &shared_mesh.vertices,
+            camera_data,
+            width,
+            height,
+            row_stride,
+            buffer_len_bytes,
+        );
+    } else {
+        return -2;
+    }
+
+    // Sama seperti efek samping yang sudah dilakukan fizgravity_engine_update_frame
+    // setelah memanggil estimate_ambient_sh, agar current_lighting tetap konsisten
+    // dipakai konsumen lain (mis. fizgravity_engine_update_frame's out_lighting).
+    engine.current_lighting = engine.lighting_estimator.current_sh;
+
+    let (cct, intensity) = engine.lighting_estimator.estimate_temperature_and_intensity();
+    *out_cct = cct;
+    *out_intensity = intensity;
+
+    0
+}
+
 /// Menganalisis kondisi tekstur kulit, kerutan dahi, dan noda jerawat dari buffer gambar RGB kamera.
 #[no_mangle]
 pub unsafe extern "C" fn fizgravity_engine_analyze_skin_health(
@@ -1209,6 +1261,40 @@ mod medium_priority_ffi_tests {
         };
         assert_eq!(res2, 468);
         assert!(ao_buffer[0] > 0.0);
+
+        unsafe { fizgravity_engine_release(engine_ptr) };
+    }
+
+    #[test]
+    fn test_ffi_estimate_lighting() {
+        let engine_ptr = unsafe { fizgravity_engine_init(std::ptr::null()) };
+        assert!(!engine_ptr.is_null());
+
+        // Buffer kamera sintetis abu-abu netral (mid-gray), tanpa row padding.
+        let width = 64;
+        let height = 64;
+        let row_stride = width * 3;
+        let pixels = vec![128u8; (row_stride * height) as usize];
+
+        let mut cct = 0.0f32;
+        let mut intensity = 0.0f32;
+        let res = unsafe {
+            fizgravity_engine_estimate_lighting(
+                engine_ptr,
+                pixels.as_ptr() as *const c_void,
+                width,
+                height,
+                row_stride,
+                pixels.len(),
+                &mut cct,
+                &mut intensity,
+            )
+        };
+        assert_eq!(res, 0);
+        assert!(cct.is_finite());
+        assert!((2000.0..=10000.0).contains(&cct), "cct out of range: {}", cct);
+        assert!(intensity.is_finite());
+        assert!((0.0..=1.0).contains(&intensity), "intensity out of range: {}", intensity);
 
         unsafe { fizgravity_engine_release(engine_ptr) };
     }
