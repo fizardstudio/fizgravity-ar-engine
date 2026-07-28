@@ -169,10 +169,12 @@ impl MakeupTriangulator {
             out_ao[idx] = 0.50;
         }
 
-        // 3. Modulasikan AO area bibir dalam secara dinamis berdasarkan blendshape mouthOpen (index 25)
+        // 3. Modulasikan AO area bibir dalam secara dinamis berdasarkan blendshape jawOpen (index 25).
+        // Mulut tertutup (coeff=0) harus netral (AO=1.0, tidak ada rongga yang terlihat), dan hanya
+        // menggelap saat mulut benar-benar terbuka dan rongga mulut mulai tampak.
         let mouth_open_coeff = blendshapes[25];
 
-        let mouth_ao = 0.15 + 0.70 * mouth_open_coeff.clamp(0.0, 1.0);
+        let mouth_ao = 1.0 - 0.85 * mouth_open_coeff.clamp(0.0, 1.0);
 
         for &idx in &UPPER_LIP_INNER {
             out_ao[idx] = mouth_ao;
@@ -234,10 +236,10 @@ mod tests {
 
         blendshapes[25] = 0.0;
         MakeupTriangulator::calculate_dynamic_ao(&blendshapes, &mut ao);
-        assert!((ao[UPPER_LIP_INNER[0]] - 0.15).abs() < 1e-4);
+        assert!((ao[UPPER_LIP_INNER[0]] - 1.0).abs() < 1e-4);
 
         blendshapes[25] = 1.0;
         MakeupTriangulator::calculate_dynamic_ao(&blendshapes, &mut ao);
-        assert!((ao[UPPER_LIP_INNER[0]] - 0.85).abs() < 1e-4);
+        assert!((ao[UPPER_LIP_INNER[0]] - 0.15).abs() < 1e-4);
     }
 }

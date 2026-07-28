@@ -1020,7 +1020,7 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_hairline_blending(
         for i in 0..count {
             alphas_slice[i] = alphas_temp[i];
         }
-        0
+        count as c_int
     } else {
         -2
     }
@@ -1164,7 +1164,7 @@ pub unsafe extern "C" fn fizgravity_engine_calculate_dynamic_ao(
         for i in 0..count {
             ao_slice[i] = ao_temp[i];
         }
-        0
+        count as c_int
     } else {
         -2
     }
@@ -1190,7 +1190,7 @@ mod medium_priority_ffi_tests {
         let res2 = unsafe {
             fizgravity_engine_calculate_dynamic_ao(engine_ptr, ao_buffer.as_mut_ptr(), 468)
         };
-        assert_eq!(res2, 0);
+        assert_eq!(res2, 468);
         assert!(ao_buffer[0] > 0.0);
 
         unsafe { fizgravity_engine_release(engine_ptr) };
