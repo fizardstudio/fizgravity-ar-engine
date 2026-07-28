@@ -297,8 +297,25 @@ pub unsafe extern "C" fn fizgravity_engine_update_frame(
             frame_bytes_size,
         );
 
-        // Estima pencahayaan global (ambient SH) secara real-time dari frame kamera
-        engine.lighting_estimator.estimate_ambient_sh(camera_data, width, height);
+        // Estima pencahayaan global (ambient SH) secara real-time dari frame kamera,
+        // memakai wajah pengguna sendiri sebagai diffuse light probe (lihat
+        // lighting::LightingEstimator::estimate_ambient_sh untuk detail teknik &
+        // referensi paper). Normal geometris diambil dari mesh wajah TERKINI yang
+        // tersimpan (face_mesh_shared, pola sama dengan fizgravity_engine_calculate_dynamic_ao).
+        // row_stride diasumsikan width * 3 (buffer piksel rapat/tanpa padding baris)
+        // karena FFI fizgravity_engine_update_frame ini belum menerima parameter
+        // stride terpisah dari sisi Kotlin/JNI — asumsi yang identik dengan yang
+        // sudah dipakai untuk copy_nonoverlapping di frame_bytes_size di atas.
+        if let Ok(mesh_for_lighting) = engine.face_mesh_shared.read() {
+            engine.lighting_estimator.estimate_ambient_sh(
+                &mesh_for_lighting.vertices,
+                camera_data,
+                width,
+                height,
+                width * 3,
+                frame_bytes_size,
+            );
+        }
         engine.current_lighting = engine.lighting_estimator.current_sh;
         
         let face_box_opt = if face_box_ptr.is_null() {
